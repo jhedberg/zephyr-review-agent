@@ -475,11 +475,17 @@ MAX_REPLY = 320  # characters: about two plain sentences, the length of the comm
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`'\"(])")
 _ENUMERATION = re.compile(r"\s*:?\s+(?=(?:1[.)]|\(1\))\s)")  # "...checked: 1. first 2. second" lists its cases
+_DONE = r"(?:addressed|resolved|fixed)"
+_AT_HEAD = r"(?:in|at|by|on)\s+(?:the\s+)?(?:(?:head|current|latest|new)\s+commit|head\b)"
+# What may follow a preamble: ", where" (the clause after it is the answer), punctuation, or the end. Without
+# one of them the words are content ("This is fixed size", "At head of the queue"), and stay.
+_THEN = r"(?:\s*,\s*where\s+|\s*[:.,;]+\s*|\s*$)"
 _PREAMBLE = re.compile(
     r"^\s*(?:because|since|as|so)\s+"
-    r"|^\s*(?:this|the (?:issue|concern|claim|comment|problem))\s+(?:is|was|has been)\s+"
-    r"(?:addressed|resolved|fixed)(?:\s+(?:in|at|by|on)\s+the\s+(?:head|current|latest|new)\s+commit)?\s*[:.,;]*\s*"
-    r"|^\s*(?:at|in|by|on)\s+the\s+(?:head|current|latest|new)\s+commit\s*[:.,;]*\s*",
+    rf"|^\s*(?:this|the (?:issue|concern|claim|comment|problem))\s+(?:is|was|has been)\s+{_DONE}"
+    rf"(?:\s+{_AT_HEAD})?{_THEN}"  # "This was fixed in the head commit, where ..."
+    rf"|^\s*{_DONE}(?:\s+{_AT_HEAD}{_THEN}|\s*:\s*)"  # "Resolved at head: ...", "Fixed: ..."
+    rf"|^\s*{_AT_HEAD}{_THEN}",
     re.I,
 )
 

@@ -429,6 +429,31 @@ def test_reply_is_short_and_in_the_comments_register():
     )
     assert reply_text("Refuted: since the guard was added (C3).") == "The guard was added."
     assert reply_text("This was fixed in the head commit.") == ""
+    # What follows the preamble is a sentence of its own, not the tail of a clause.
+    assert reply_text("This is resolved at the current commit, where the check compares against zero.") == (
+        "The check compares against zero."
+    )
+    assert reply_text("Resolved at head: the driver now implements a configure callback.") == (
+        "The driver now implements a configure callback."
+    )
+    assert reply_text("Fixed: `foo_init()` returns the error.") == "`foo_init()` returns the error."
+    assert reply_text("Resolved at head, where the check compares against zero.") == (
+        "The check compares against zero."
+    )
+    # Words that only look like a preamble are the answer, and stay.
+    for kept in (
+        "Fixed-width types are used throughout the new code.",
+        "Fixed, variable, and adaptive dividers are supported.",
+        "This is fixed size.",
+        "It is fixed size.",
+        "At head of the queue, the sentinel remains.",
+        "On the current commit path the guard runs.",
+    ):
+        assert reply_text(kept) == kept
+    assert reply_text("This was fixed. Where the buffer is allocated is unchanged.") == (
+        "Where the buffer is allocated is unchanged."
+    )
+    assert reply_text("This was resolved in the head commit. It is fixed size.") == "It is fixed size."
     # a reason written as a list of cases stops before the list; it was never one answer
     assert reply_text("All are refuted on inspection of the headers: 1. C14 (x): foo. 2. X3: bar.") == (
         "All are refuted on inspection of the headers."

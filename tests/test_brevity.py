@@ -41,6 +41,18 @@ def test_finding_text_folds_trigger_and_impact_without_repeating():
     ) == ("The lock is leaked when a transfer fails, so the bus wedges.")
 
 
+def test_a_trigger_keeps_the_spelling_of_an_acronym_or_identifier():
+    assert finding_text(_f(trigger="Compiling with the check enabled")).endswith(
+        "Happens when compiling with the check enabled."
+    )
+    assert finding_text(_f(trigger="A transfer fails")).endswith("Happens when a transfer fails.")
+    assert finding_text(_f(trigger="Non-blocking mode is enabled")).endswith(
+        "Happens when non-blocking mode is enabled."
+    )
+    for t in ("MISRA C:2012 Rule 8.9 is checked", "CONFIG_SMP is enabled", "K_NO_WAIT is passed", "`foo()` fails"):
+        assert finding_text(_f(trigger=t)).endswith(f"Happens when {t}.")
+
+
 def test_inline_comment_shape():
     f = _f(
         recommendation="Give the semaphore before returning",
