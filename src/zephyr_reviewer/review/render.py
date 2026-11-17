@@ -133,6 +133,17 @@ def _sentence(text: str) -> str:
     return text
 
 
+def _mid_sentence(text: str) -> str:
+    """Text that began a sentence, for use inside one: a capitalized plain word loses its capital
+    ("Compiling" becomes "compiling", "Non-blocking" becomes "non-blocking"); an acronym, an identifier
+    or a name in code keeps its spelling (MISRA, CONFIG_FOO, K_NO_WAIT)."""
+    first = text.split()[0].rstrip(",.;:") if text.split() else ""
+    word = first.replace("-", "")
+    if word.isalpha() and first[:1].isupper() and first[1:] == first[1:].lower():
+        return text[0].lower() + text[1:]
+    return text
+
+
 def finding_text(f: Finding) -> str:
     """The finding's body as posted: the problem, with the trigger and impact folded in as clauses when
     they add something, and nothing else. Short enough to skim, specific enough to act on."""
@@ -144,7 +155,7 @@ def finding_text(f: Finding) -> str:
         extras.append(
             t
             if t[:1].isupper() and t.split()[0].lower() in ("when", "if", "on", "only")
-            else f"Happens when {t[:1].lower() + t[1:]}"
+            else f"Happens when {_mid_sentence(t)}"
         )
     if f.impact and f.impact.lower().rstrip(".") not in low:
         extras.append(f.impact.strip().rstrip("."))
