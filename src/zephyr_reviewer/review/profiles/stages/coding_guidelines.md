@@ -112,6 +112,8 @@ only when the violation is also a defect: a shift count that can reach the type 
 behaviour (`bug`), a missing `default` that drops an input is `bug` or `security`, an unchecked
 return value belongs to the error-handling specialist. Group violations of the same rule in one
 file into one concern that lists the lines, so the review stays readable; do not emit one concern
-per line. Cite the rule number in the title or problem so the author can look it up. Do not ask for
-changes to lines the PR did not touch, do not report checkpatch's territory, and do not flag code
-that the project already writes this way in the same subsystem without a rule behind the request.
+per line. A concern whose lines are not one contiguous range carries no `suggested_code`: it would
+be applied at the one place the concern is anchored to. Cite the rule number in the title or problem so the author
+can look it up. Do not ask for changes to lines the PR did not touch, do not report checkpatch's
+territory, and do not flag code that the project already writes this way in the same subsystem
+without a rule behind the request.

@@ -32,6 +32,12 @@ CONFIDENCES = ["high", "medium", "low"]
 
 SUBMIT_TOOL_NAME = "submit_review"
 
+# Shared by every tool that takes a finding: the code is offered on GitHub as a replacement of the cited lines.
+SUGGESTED_CODE = (
+    "Drop-in replacement for the cited lines (line to end_line) and nothing else, correctly indented, no "
+    "diff markers, no elided parts; empty when unhelpful or when the fix touches more than those lines."
+)
+
 SUBMIT_REVIEW_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -114,8 +120,7 @@ SUBMIT_REVIEW_TOOL: dict[str, Any] = {
                             },
                             "suggested_code": {
                                 "type": "string",
-                                "description": "Drop-in replacement for the cited "
-                                "lines, correctly indented, no diff markers; empty when unhelpful.",
+                                "description": SUGGESTED_CODE,
                             },
                             "confidence": {"type": "string", "enum": CONFIDENCES},
                             "evidence": {
