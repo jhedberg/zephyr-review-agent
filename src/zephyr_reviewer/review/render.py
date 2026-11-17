@@ -307,6 +307,22 @@ def inline_marker(tag: str, key: str) -> str:
     return f"<!-- {tag}:finding:{key} -->"
 
 
+_ELIDED_COMMENT = re.compile(r"^\s*(?:/[/*]|#)\s*(?:\.{3}|…)\s*(?:\*/)?\s*$", re.M)  # "/* ... */", "// ...", "# ..."
+_ELIDED_LINE = re.compile(r"^\s*(?:\.{3}|…)\s*$", re.M)  # "..." alone on a line
+_ELLIPSIS_IS_CODE = ("python", "yaml")  # a line of "..." is a statement or a document end there
+
+
+def replaces_anchor(code: str, path: str = "") -> bool:
+    """Whether suggested code can stand in for the lines the comment is anchored to. GitHub applies a
+    suggestion block as exactly that replacement, so code with an elided part ("..." on a line of its own
+    or in a comment of its own, the way a finding shows two sites or skips unchanged lines) is an
+    illustration, not a patch: committed as a suggestion it would put the "..." and the other site's code
+    at the anchor. In `path`'s language a bare "..." may be code, and then only the comment form counts."""
+    if _ELIDED_COMMENT.search(code):
+        return False
+    return _lang(path) in _ELLIPSIS_IS_CODE or not _ELIDED_LINE.search(code)
+
+
 def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[str, Any]]:
     """One review comment per anchored finding, self-contained and short, carrying a hidden marker for dedup."""
     comments = []
@@ -318,7 +334,8 @@ def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[s
         if f.recommendation:
             body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
         if f.suggested_code.strip():
-            body += ["", "```suggestion", f.suggested_code.rstrip(), "```"]
+            fence = "suggestion" if replaces_anchor(f.suggested_code, f.file) else _lang(f.file)
+            body += ["", f"```{fence}", f.suggested_code.rstrip(), "```"]
         body += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
         c: dict[str, Any] = {"path": f.file, "line": f.end_line or f.line, "side": "RIGHT", "body": "\n".join(body)}
         if f.end_line and f.end_line > f.line:

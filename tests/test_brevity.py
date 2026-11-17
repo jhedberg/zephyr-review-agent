@@ -56,3 +56,28 @@ def test_inline_comment_shape():
     assert body[-1] == "<sub>AI review, advisory; verify before acting on it.</sub>"
     joined = "\n".join(body)
     assert "read_file" not in joined and "internal" not in joined and "Problem" not in joined
+
+
+def test_code_with_an_elided_part_is_shown_not_offered_as_a_suggestion():
+    def body(code: str, file: str = "a.c") -> str:
+        return inline_comments(Review("s", "comment", "high", [_f(suggested_code=code, file=file)]), "t")[0]["body"]
+
+    two_sites = "expected = (uint16_t)((buf != NULL) ? cmd(buf)->opcode : 0U);\n...\nop->err = (uint8_t)err;"
+    for code in (two_sites, "\tfoo();\n\t/* ... */\n\tbar();", "foo();\n// ...\nbar();", "foo();\n  …\nbar();"):
+        assert "```suggestion" not in body(code) and f"```c\n{code}\n```" in body(code)
+    assert "```python\nfoo()\n# ...\nbar()\n```" in body("foo()\n# ...\nbar()", "a.py")
+    # Dots inside a line are code or a comment, not an elision.
+    for code in ("\tva_start(ap, fmt); /* fmt, ... */", "#define LOG(...) printk(__VA_ARGS__)"):
+        assert f"```suggestion\n{code}\n```" in body(code)
+    # A line of "..." is a statement in Python and ends a document in YAML.
+    for code, file in (("def probe(dev):\n    ...", "a.py"), ('doc = """\n...\n"""', "a.py"), ("a: 1\n...", "a.yaml")):
+        assert f"```suggestion\n{code}\n```" in body(code, file)
+
+
+def test_every_stage_is_told_what_suggested_code_replaces():
+    from zephyr_reviewer.review.pipeline import _FINDING_PROPS
+    from zephyr_reviewer.review.schema import SUBMIT_REVIEW_TOOL, SUGGESTED_CODE
+
+    single = SUBMIT_REVIEW_TOOL["function"]["parameters"]["properties"]["findings"]["items"]["properties"]
+    assert single["suggested_code"]["description"] == _FINDING_PROPS["suggested_code"]["description"] == SUGGESTED_CODE
+    assert "nothing else" in SUGGESTED_CODE and "no elided parts" in SUGGESTED_CODE
