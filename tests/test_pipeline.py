@@ -14,6 +14,7 @@ from tests.test_agent import ScriptedOpenRouter, _completion, _llm
 from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.mcp_server import build_server
 from zephyr_reviewer.review.external import Claim
+from zephyr_reviewer.review.followup import Dismissed, drop_dismissed
 from zephyr_reviewer.review.github_api import PullRequest
 from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.review.pipeline import (
@@ -957,3 +958,40 @@ async def test_batched_hard_cases_keep_their_own_reasons(mini_repo):
     assert verdicts["X3"].verdict == "refuted" and verdicts["X3"].reason == "nothing wrong at drivers/i2c/i2c_foo.c"
     stage = [s for s in run.stages if s["stage"] == "H1+H2+H3"][0]
     assert stage["verdict"] == "H1 confirmed, H2 refuted, H3 refuted"
+
+
+async def test_findings_pruned_before_the_report_are_not_in_it(mini_repo):
+    router = StageRouter()
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(7, "t", "", "author", "main", mini_repo["base"], "pr", mini_repo["head"], "o/r", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", "o/r")
+    llm_cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    llm_cheap._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    llm_strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    llm_strong._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    seen: list[int] = []
+
+    def prune(review) -> int:
+        # Every verified finding restates a comment a person dismissed, as the command line passes it.
+        dismissed = [Dismissed(i, f"T{i}", f.file, f.line, f.title, "", "bob") for i, f in enumerate(review.findings)]
+        seen.append(len(dismissed))
+        return drop_dismissed(review, dismissed, log=lambda m: None)
+
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            llm_cheap,
+            llm_strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text=hunk_text(intel.diff_text),
+            prune=prune,
+            log=lambda m: None,
+        )
+
+    assert seen and seen[0] > 0 and run.review is not None and run.review.findings == []
+    report = [r for r in router.requests if "submit_report" in {t["function"]["name"] for t in r["tools"]}][-1]
+    asked = report["messages"][1]["content"]
+    assert "## Verified findings (fixed; do not change them)\n(none)" in asked

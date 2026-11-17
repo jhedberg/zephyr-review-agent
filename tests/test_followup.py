@@ -655,3 +655,47 @@ def test_a_thumbs_down_gets_its_thread_resolved_when_the_run_posts(monkeypatch):
     assert not [b for m, p, b in seen if p == "/graphql" and "mutation" in b["query"]]
     assert cli._load_dismissed(ReviewConfig(), _gh([], comments, threads), pr) == []  # never reviewed before
     assert cli._load_dismissed(ReviewConfig(), None, pr) == []
+
+
+def test_the_verdict_and_summary_follow_what_is_left_after_a_drop():
+    from zephyr_reviewer.review.followup import NOTHING_NEW, Dismissed, drop_dismissed
+
+    dismissed = [Dismissed(2, "T2", FILE, 19, "Missing lock", "", "bob", "resolved")]
+    pr = PullRequest(7, "t", "", "a", "main", "b" * 40, "pr", NEW_HEAD, "o/r", False)
+
+    # The only finding, a high one, was dismissed: nothing is left to ask changes for.
+    review = Review(
+        "The missing lock must be fixed before merge.", "request_changes", "high", [_finding("Missing lock")]
+    )
+    assert drop_dismissed(review, dismissed, log=lambda m: None) == 1
+    assert (review.verdict, review.summary) == ("approve", NOTHING_NEW)
+    body = render_comment(review, RunResult(review, 1, Usage(), [], False), pr, repo="o/r", tag="zephyr-reviewer")
+    assert "Request changes" not in body and "must be fixed" not in body and "**Findings:** 0" in body
+
+    # A low finding is left: worth a look, not blocking, and the summary is the report's.
+    review = Review(
+        "s", "request_changes", "high", [_finding("Missing lock"), _finding("Stale comment", line=60, severity="low")]
+    )
+    assert drop_dismissed(review, dismissed, log=lambda m: None) == 1
+    assert (review.verdict, review.summary) == ("comment", "s")
+
+    # Another high finding is left, or a medium one the report may have called blocking: the verdict stands.
+    for severity in ("high", "medium"):
+        review = Review(
+            "s", "request_changes", "high", [_finding("Missing lock"), _finding("Overflow", line=60, severity=severity)]
+        )
+        drop_dismissed(review, dismissed, log=lambda m: None)
+        assert review.verdict == "request_changes"
+    review = Review(
+        "s",
+        "request_changes",
+        "high",
+        [_finding("Missing lock", severity="low"), _finding("No bound", line=60, severity="medium")],
+    )
+    drop_dismissed(review, dismissed, log=lambda m: None)
+    assert review.verdict == "request_changes"
+
+    # Nothing dropped, nothing touched.
+    review = Review("s", "request_changes", "high", [_finding("Overflow", line=60)])
+    assert drop_dismissed(review, dismissed, log=lambda m: None) == 0
+    assert (review.verdict, review.summary) == ("request_changes", "s")

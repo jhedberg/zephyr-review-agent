@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any
@@ -759,6 +760,7 @@ async def run_pipeline(
     extra_tools: list[LocalTool] | None = None,
     ensemble: list[OpenRouter] | None = None,
     claims: list[Claim] | None = None,
+    prune: Callable[[Review], int] | None = None,
     log=print,
     quiet: bool = False,
 ) -> RunResult:
@@ -766,6 +768,8 @@ async def run_pipeline(
     model, concerns with the same file and title are merged, and verification sees how many models agreed.
     `claims` are findings supplied from outside (a human, another tool): they enter verification as X* ids
     that must be confirmed with evidence, sent to a hard case, or refuted, and leave with a verdict.
+    `prune` removes verified findings that must not be posted (restatements of comments people dismissed)
+    before the report is written, so that the summary and the verdict describe what the author will see.
     ``quiet`` logs one line per stage instead of one per model and tool call."""
     started = time.monotonic()
     stages = specialists or plan_specialists(changed_files, added_text)
@@ -1054,6 +1058,8 @@ async def run_pipeline(
             )
         )
     review.external_claims = verdicts
+    if prune is not None:
+        prune(review)
 
     system = base_system + "\n\n" + _stage_prompt("report")
     terminal = TerminalTool(SUBMIT_REPORT_TOOL, _parse_report, lambda o: f"report: {o['verdict']}")

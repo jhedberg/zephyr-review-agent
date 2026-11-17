@@ -513,6 +513,7 @@ async def _run(
                 max_hard_cases=cfg.max_hard_cases,
                 ensemble=ensemble,
                 claims=claims,
+                prune=(lambda review: drop_dismissed(review, dismissed, log)) if dismissed else None,
                 max_context_tokens=cfg.max_context_tokens,
                 max_seconds=cfg.max_stage_seconds,
                 extra_tools=extra_tools,
@@ -699,6 +700,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         log(tb.rstrip())
         log("::endgroup::")
     if run.review is not None and dismissed:
+        # The specialist pipeline dropped them before its report stage; the other pipelines report first.
         n = drop_dismissed(run.review, dismissed, log)
         if n:
             log(f"{n} finding(s) restate comment(s) people dismissed earlier; not posted")
