@@ -437,7 +437,8 @@ resolving its thread, or by a 👎 reaction on it. A reply explaining why is wel
 on the next run, but not required. From then on that point is settled: the next run is told what
 was dismissed, by whom and with what reply, and is instructed not to raise it again in any wording
 or at another line; and a new finding that nevertheless restates it (same file and title, or
-anchored within a few lines of it) is dropped before posting, with a log line saying so. A 👎 on
+anchored within a few lines of it) is dropped before posting, with a log line saying so. The
+summary and the verdict are written for the findings that are left. A 👎 on
 an open thread also gets the thread resolved when the token allows it. A thread the reviewer
 itself closed as no longer applying is not a dismissal.
 

@@ -330,8 +330,9 @@ def _restates(f: Finding, d: Dismissed) -> bool:
 def drop_dismissed(review: Review, dismissed: list[Dismissed], log=print) -> int:
     """Remove from the review every finding that restates a comment a person dismissed: same file and the
     same title (or one containing the other), or anchored within a few lines of it. Returns how many were
-    removed, each one logged."""
+    removed, each one logged. The verdict follows what is left, see settle_verdict()."""
     kept: list[Finding] = []
+    worst = review.highest_severity()
     dropped = 0
     for f in review.findings:
         match = next((d for d in dismissed if _restates(f, d)), None)
@@ -345,7 +346,30 @@ def drop_dismissed(review: Review, dismissed: list[Dismissed], log=print) -> int
             + (f" ({match.url})" if match.url else "")
         )
     review.findings = kept
+    if dropped:
+        settle_verdict(review, worst)
     return dropped
+
+
+NOTHING_NEW = "Every finding of this run restates a comment that was dismissed earlier; nothing new is reported."
+
+
+def settle_verdict(review: Review, worst_before: str) -> None:
+    """Make the verdict and the summary agree with the findings left after a drop. Both were written with
+    the dropped findings in view: a review asking for changes because of a finding that is no longer in it
+    asks for nothing, and a summary naming that finding describes a review nobody sees."""
+    if not review.findings:
+        review.summary = NOTHING_NEW
+        if review.verdict == "request_changes":
+            review.verdict = "approve"
+    elif (
+        review.verdict == "request_changes"
+        and worst_before in ("critical", "high")
+        and review.highest_severity() in ("low", "suggestion")
+    ):
+        # What forced the verdict is gone and nothing left can block. A medium finding may be the one
+        # the report called merge-blocking, so with one left the verdict stands.
+        review.verdict = "comment"
 
 
 def as_claims(findings: list[OpenFinding], start: int = 1, old_head: str = "") -> list[Claim]:
