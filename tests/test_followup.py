@@ -601,7 +601,7 @@ def test_dismissed_comments_are_known_and_not_re_checked():
         (2, "T2", 19, "bob", "resolved", False),
         (6, "T6", 18, "carol", "thumbs down", True),
     ]
-    assert dismissed[0].title == "Missing lock"
+    assert dismissed[0].title == "Missing lock" and dismissed[0].severity == "high"
     assert dismissed[0].replies == [
         Reply("bob", "These LL headers are always available; no guard is needed.", "reviewer", "maintainer")
     ]
@@ -727,3 +727,38 @@ def test_the_verdict_and_summary_follow_what_is_left_after_a_drop():
     review = Review("s", "request_changes", "high", [_finding("Overflow", line=60)])
     assert drop_dismissed(review, dismissed, log=lambda m: None) == 0
     assert (review.verdict, review.summary) == ("request_changes", "s")
+
+
+def test_a_grave_finding_is_not_dropped_for_being_close_to_a_slight_dismissed_comment():
+    from zephyr_reviewer.review.followup import Dismissed, drop_dismissed
+
+    nit = "MISRA Rule 10.3: conditional expression narrowed to uint16_t without explicit cast"
+    uaf = "Use after free of the command buffer on the timeout path"
+
+    def left(was: str, title: str, now: str, line: int = 21) -> tuple[list[str], list[str]]:
+        """(titles left in the review, log) with `nit` dismissed at line 19 at severity `was`."""
+        d = Dismissed(2, "T2", FILE, 19, nit, "", "bob", "resolved", url="https://x/2", severity=was)
+        review = Review("s", "comment", "high", [_finding(title, line=line, severity=now)])
+        logs: list[str] = []
+        drop_dismissed(review, [d], log=logs.append)
+        return [f.title for f in review.findings], logs
+
+    dropped = f"not posted: {FILE}:21 {{}} restates an earlier comment resolved by bob (https://x/2)"
+    # A person who set a low comment or a suggestion aside decided nothing about a critical or high finding.
+    for was in ("low", "suggestion"):
+        for now in ("critical", "high"):
+            assert left(was, uaf, now) == (
+                [uaf],
+                [
+                    f"posted: {FILE}:21 {uaf} ({now}) is next to an earlier comment resolved by bob, which was "
+                    f"{was}: too grave to drop for being close (https://x/2)"
+                ],
+            )
+    # Anything else that close is dropped as before: not grave, or the comment was not slight (a comment
+    # that came back one level up, medium to high, is the case the rule was made for), or of unknown severity.
+    for was, now in (("low", "medium"), ("low", "low"), ("medium", "high"), ("high", "critical"), ("", "critical")):
+        assert left(was, uaf, now) == ([], [dropped.format(uaf)])
+    # The same title is the same point at any severity.
+    assert left("low", nit, "critical") == ([], [dropped.format(nit[:70])])  # the log clips a title
+    # Not close: kept, without a word.
+    assert left("low", uaf, "critical", line=60) == ([uaf], [])
