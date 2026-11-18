@@ -59,6 +59,7 @@ class Dismissed:
     replies: list[Reply] = field(default_factory=list)
     url: str = ""
     open: bool = False  # the thread is still open (a thumbs down on an unresolved thread)
+    severity: str = ""  # as posted; empty when the comment carries no badge
 
 
 @dataclass
@@ -266,7 +267,7 @@ def dismissed_findings(
             by, how, is_open = scan.thumbs_down[cid], "thumbs down", True
         else:
             continue
-        title, text, _, _ = parse_posted(raw.get("body") or "")
+        title, text, severity, _ = parse_posted(raw.get("body") or "")
         if not title:
             continue
         replies, _ = _thread_replies(scan.replies_by_root.get(cid, []), ours, pr_author, trust)
@@ -283,6 +284,7 @@ def dismissed_findings(
                 replies=replies,
                 url=raw.get("html_url") or "",
                 open=is_open,
+                severity=severity,
             )
         )
     return out
@@ -320,26 +322,54 @@ def _same_title(a: str, b: str) -> bool:
 same_title = _same_title  # shared with previous.py: one notion of "the same point"
 
 
-def _restates(f: Finding, d: Dismissed) -> bool:
-    if f.file != d.path:
-        return False
-    if _same_title(f.title, d.title):
-        return True
+def _near(f: Finding, d: Dismissed) -> bool:
     if not f.line or not d.line:
         return False
     return (f.line - NEAR_LINES) <= d.line <= ((f.end_line or f.line) + NEAR_LINES)
 
 
+GRAVE = ("critical", "high")
+SLIGHT = ("low", "suggestion")
+
+
+def _outweighs(f: Finding, d: Dismissed) -> bool:
+    """A critical or high finding against a comment that was low or a suggestion. A comment without a
+    badge has no known severity, and nothing outweighs the unknown."""
+    return f.severity in GRAVE and d.severity in SLIGHT
+
+
+def _restates(f: Finding, d: Dismissed) -> bool:
+    """Same file and the same title (or one containing the other), or anchored within a few lines of the
+    comment. Closeness alone says the finding is about the same code, not that it makes the same point:
+    the person who set a slight comment aside decided nothing about a grave finding two lines away. Titles
+    cannot tell a grave restatement of the slight comment from another matter, so such a finding is posted:
+    burying a real defect costs more than a repeated comment, and once a person dismisses that one, at
+    its severity, a finding close to it is dropped."""
+    if f.file != d.path:
+        return False
+    if _same_title(f.title, d.title):
+        return True
+    return _near(f, d) and not _outweighs(f, d)
+
+
 def drop_dismissed(review: Review, dismissed: list[Dismissed], log=print) -> int:
-    """Remove from the review every finding that restates a comment a person dismissed: same file and the
-    same title (or one containing the other), or anchored within a few lines of it. Returns how many were
-    removed, each one logged. The verdict follows what is left, see settle_verdict()."""
+    """Remove from the review every finding that restates a comment a person dismissed, see _restates().
+    Returns how many were removed, each one logged. A finding that is kept although it sits next to a
+    dismissed comment, because it outweighs the comment, is logged too. The verdict follows what is left,
+    see settle_verdict()."""
     kept: list[Finding] = []
     worst = review.highest_severity()
     dropped = 0
     for f in review.findings:
         match = next((d for d in dismissed if _restates(f, d)), None)
         if match is None:
+            near = next((d for d in dismissed if f.file == d.path and _near(f, d)), None)
+            if near is not None:
+                log(
+                    f"posted: {f.file}:{f.line} {f.title[:70]} ({f.severity}) is next to an earlier comment "
+                    f"{near.how}{' by ' + near.by if near.by else ''}, which was {near.severity}: too grave to "
+                    "drop for being close" + (f" ({near.url})" if near.url else "")
+                )
             kept.append(f)
             continue
         dropped += 1
