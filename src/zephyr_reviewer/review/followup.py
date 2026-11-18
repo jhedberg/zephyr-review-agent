@@ -502,8 +502,9 @@ _ENUMERATION = re.compile(r"\s*:?\s+(?=(?:1[.)]|\(1\))\s)")  # "...checked: 1. f
 _DONE = r"(?:addressed|resolved|fixed)"
 _AT_HEAD = r"(?:in|at|by|on)\s+(?:the\s+)?(?:(?:head|current|latest|new)\s+commit|head\b)"
 # What may follow a preamble: ", where" (the clause after it is the answer), punctuation, or the end. Without
-# one of them the words are content ("This is fixed size", "At head of the queue"), and stay.
-_THEN = r"(?:\s*,\s*where\s+|\s*[:.,;]+\s*|\s*$)"
+# one of them the words are content ("This is fixed size", "At head of the queue"), and stay. Punctuation
+# ends a preamble only before a space or the end: the dot in "In head.S" or "At head.next" is part of a name.
+_THEN = r"(?:\s*,\s*where\s+|\s*[:.,;]+(?:\s+|$)|\s*$)"
 _PREAMBLE = re.compile(
     r"^\s*(?:because|since|as|so)\s+"
     rf"|^\s*(?:this|the (?:issue|concern|claim|comment|problem))\s+(?:is|was|has been)\s+{_DONE}"

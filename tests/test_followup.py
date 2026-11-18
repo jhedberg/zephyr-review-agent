@@ -448,6 +448,9 @@ def test_reply_is_short_and_in_the_comments_register():
         "It is fixed size.",
         "At head of the queue, the sentinel remains.",
         "On the current commit path the guard runs.",
+        "In head.S the vector table is placed first.",
+        "At head.next the list is terminated.",
+        "This is fixed.width data.",
     ):
         assert reply_text(kept) == kept
     assert reply_text("This was fixed. Where the buffer is allocated is unchanged.") == (
