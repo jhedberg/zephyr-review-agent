@@ -118,6 +118,17 @@ def test_retries_are_reported_with_reason_and_wait():
     assert float(events[0].rsplit(" in ", 1)[1][:-1]) >= 7
     assert "no response within 90s (ReadTimeout)" in events[1] and "retry 3/4" in events[1]
 
+    # A proxy's answer for a provider that did not reply is as transient as a 503, as a status or in the body.
+    for first in (
+        httpx.Response(520, json={"error": {"message": "Provider returned error", "code": 520}}),
+        httpx.Response(200, json={"error": {"message": "Provider returned error", "code": 524}}),
+    ):
+        replies = [first, httpx.Response(200, json=_completion({"content": "hi"}))]
+        events.clear()
+        llm = _llm(lambda request, r=replies: r.pop(0), max_attempts=2, on_event=events.append)
+        assert llm.chat([{"role": "user", "content": "x"}]).content == "hi"
+        assert len(events) == 1 and "retry 2/2" in events[0] and "Provider returned error" in events[0]
+
     def always_timeout(request):
         raise httpx.ReadTimeout("read timed out")
 
