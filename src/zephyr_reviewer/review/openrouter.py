@@ -23,7 +23,9 @@ import httpx
 
 from .text import without_surrogates
 
-RETRY_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504}
+# Worth another attempt: the request was not at fault. 520 to 524 are what a proxy in front of a provider
+# answers when the provider did not (an empty or unknown reply, down, timed out); they pass as quickly as a 502.
+RETRY_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 
 class OpenRouterError(RuntimeError):
