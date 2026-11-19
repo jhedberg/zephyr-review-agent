@@ -1073,3 +1073,89 @@ async def test_a_leader_that_fails_or_stalls_does_not_hold_the_others_back():
     stalled.set()
     assert await leader == "late"
     assert await primed(None, fine) == "ran"  # no primer: runs at once
+
+
+class FailingVerification(StageRouter):
+    """A router whose verification stage gets a provider error for its first ``failures`` requests."""
+
+    def __init__(self, failures: int):
+        super().__init__(verification_first_attempt_bad=False)
+        self.failures = failures
+        self.verification_requests = 0
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        tools = {t["function"]["name"] for t in json.loads(request.content).get("tools") or []}
+        if "submit_verification" in tools:
+            self.verification_requests += 1
+            if self.verification_requests <= self.failures:
+                return httpx.Response(400, json={"error": {"message": "Provider returned error", "code": 400}})
+        return super().handler(request)
+
+
+async def _run_with(router: StageRouter, mini_repo, logs: list[str], **kw):
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(7, "t", "", "author", "main", mini_repo["base"], "pr", mini_repo["head"], "o/r", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", "o/r")
+    llm_cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    llm_cheap._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    llm_strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    llm_strong._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    async with ToolBridge(build_server(intel)) as bridge:
+        return await run_pipeline(
+            llm_cheap,
+            llm_strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text=hunk_text(intel.diff_text),
+            log=logs.append,
+            quiet=True,
+            **kw,
+        )
+
+
+async def test_a_verification_stage_that_fails_once_is_run_again(mini_repo):
+    logs: list[str] = []
+    healthy = await _run_with(StageRouter(verification_first_attempt_bad=False), mini_repo, [])
+    run = await _run_with(FailingVerification(1), mini_repo, logs)
+    assert any(m.startswith("verification did not submit (model request failed: HTTP 400") for m in logs)
+    assert any("running it once more" in m for m in logs)
+    # The second run of the stage is the review's: the same findings as when nothing failed.
+    assert run.review is not None and run.review.findings
+    assert [f.title for f in run.review.findings] == [f.title for f in healthy.review.findings]
+    assert run.errors == healthy.errors
+    stages = [(r["stage"], r.get("failed", False)) for r in run.stages if r["stage"] == "verification"]
+    assert stages == [("verification", True), ("verification", False)]
+
+
+async def test_without_verification_there_is_no_review(mini_repo):
+    logs: list[str] = []
+    router = FailingVerification(99)
+    run = await _run_with(router, mini_repo, logs)
+    assert router.verification_requests == 2  # the stage and its one repeat, each ended by the first failed request
+    # Nothing to post: the specialists' candidates were not checked, merged or weighed.
+    assert run.review is None
+    assert len(run.errors) == 1 and run.errors[0].startswith(
+        "verification did not submit, twice: model request failed: HTTP 400"
+    )
+    assert "were not verified, so there is no review" in run.errors[0]
+    # No later stage ran, and the record keeps what the specialists raised.
+    tools = [{t["function"]["name"] for t in r["tools"]} for r in router.requests]
+    assert not any({"submit_hard_case_verdict", "submit_hard_case_verdicts", "submit_report"} & t for t in tools)
+    assert run.review_map["concerns"] and {c["fate"] for c in run.review_map["concerns"]} == {"unverified"}
+
+
+async def test_the_record_of_a_run_without_verification_keeps_what_an_earlier_run_refuted(mini_repo):
+    from zephyr_reviewer.review.previous import Refutation
+
+    healthy = await _run_with(StageRouter(verification_first_attempt_bad=False), mini_repo, [])
+    first, *others = healthy.review_map["concerns"]
+    assert others  # something is left for verification to fail on
+    settled = Refutation(first["file"], first["line"], first["title"], "the lock is released", "a" * 40, settled=True)
+    run = await _run_with(FailingVerification(99), mini_repo, [], refuted=[settled])
+    assert run.review is None
+    fates = {c["id"]: (c["fate"], c.get("reason", "")) for c in run.review_map["concerns"]}
+    assert fates[first["id"]] == ("refuted", "the lock is released")
+    assert {fates[c["id"]] for c in others} == {("unverified", "")}

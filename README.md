@@ -505,6 +505,10 @@ review, no reply, and an earlier review's comment stays as it was. The error, an
 when there is one, go to the job log and the artifacts (`review.json`, `traceback.txt`). The step
 fails on its own.
 
+In the specialist pipeline that includes a verification stage that does not submit, after one
+repeat of the stage: it is where candidates are checked, merged and weighed, and without it
+there is no review to post. `review_map.json` keeps what the specialists raised, as `unverified`.
+
 ### Issues only
 
 The review reports problems and nothing else. The summary states the result and the key issue

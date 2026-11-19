@@ -944,49 +944,85 @@ async def run_pipeline(
                 f"{len(v.hard_cases)} hard case(s)"
             ),
         )
-        vres = await run_agent(
-            verify_llm,
-            bridge,
-            system,
-            verification_message(opening, concerns, dismissals, stages, drafters, external),
-            terminal,
-            max_steps=verify_max_steps,
-            max_context_tokens=max_context_tokens,
-            max_seconds=max_seconds,
-            max_rejections=3,
-            extra_tools=extra_tools,
-            log=log,
-            label="verification",
-            quiet=quiet,
-        )
-        usages.append(vres.usage)
-        models += [m for m in vres.models_used if m not in models]
-        transcript += [{**t, "stage": "verification"} for t in vres.transcript]
+        message = verification_message(opening, concerns, dismissals, stages, drafters, external)
+
+        async def verify() -> AgentResult:
+            res = await run_agent(
+                verify_llm,
+                bridge,
+                system,
+                message,
+                terminal,
+                max_steps=verify_max_steps,
+                max_context_tokens=max_context_tokens,
+                max_seconds=max_seconds,
+                max_rejections=3,
+                extra_tools=extra_tools,
+                log=log,
+                label="verification",
+                quiet=quiet,
+            )
+            usages.append(res.usage)
+            models.extend(m for m in res.models_used if m not in models)
+            transcript.extend({**t, "stage": "verification"} for t in res.transcript)
+            return res
+
+        vres = await verify()
         if vres.output is None:
-            # Fail safe: every concern becomes a hard case so nothing is dropped silently.
-            errors.append(f"verification did not submit: {'; '.join(vres.errors)}; all concerns treated as hard cases")
-            verification = Verification(
-                [],
-                [],
-                [
-                    HardCase(f"H{i + 1}", [c.id], "verification stage failed", str(c.data.get("severity", "medium")))
-                    for i, c in enumerate([*concerns, *external])
-                ],
+            # Usually a model request that failed, which a second run of the stage does not meet again.
+            log(f"verification did not submit ({'; '.join(vres.errors) or 'no reason given'}); running it once more")
+            records.append(_stage_record("verification", vres, {"failed": True}))
+            vres = await verify()
+        if vres.output is None:
+            # Verification is where candidates are checked against the guides, duplicates merged and the
+            # contested ones picked out. Without it there is no review, only what the specialists suspected:
+            # nothing is posted, as for any run that failed, and the record keeps the candidates.
+            errors.append(
+                f"verification did not submit, twice: {'; '.join(vres.errors) or 'no reason given'}; "
+                f"{len(concerns)} candidate(s) of the specialists were not verified, so there is no review"
             )
             records.append(_stage_record("verification", vres, {"failed": True}))
-        else:
-            verification = vres.output
-            records.append(
-                _stage_record(
-                    "verification",
-                    vres,
-                    {
-                        "findings": len(verification.findings),
-                        "dismissed": len(verification.dismissed),
-                        "hard_cases": len(verification.hard_cases),
-                    },
-                )
+            return RunResult(
+                review=None,
+                steps=sum(r["steps"] for r in records),
+                usage=_sum_usage(usages),
+                models_used=models,
+                forced=any(r["forced"] for r in records),
+                errors=errors,
+                transcript=transcript,
+                seconds=time.monotonic() - started,
+                stages=records,
+                review_map={
+                    "specialists": stages,
+                    "drafters": drafters,
+                    "concerns": [
+                        {
+                            "id": c.id,
+                            "stage": c.stage,
+                            "raised_by": c.raised_by,
+                            "title": c.title,
+                            "file": c.data.get("file"),
+                            "line": c.data.get("line"),
+                            "severity": c.data.get("severity"),
+                            **fates.get(c.id, {"fate": "unverified"}),  # one reused from an earlier run has its fate
+                        }
+                        for c in [*concerns, *reused]
+                    ],
+                    "stages": records,
+                },
             )
+        verification = vres.output
+        records.append(
+            _stage_record(
+                "verification",
+                vres,
+                {
+                    "findings": len(verification.findings),
+                    "dismissed": len(verification.dismissed),
+                    "hard_cases": len(verification.hard_cases),
+                },
+            )
+        )
         for i, f in enumerate(verification.findings, 1):
             fid = f"VF{i}"
             final.append({**f, "_id": fid})
