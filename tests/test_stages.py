@@ -165,3 +165,19 @@ def test_dossier_respects_budget_and_priority():
     assert build_dossier([], 1000).startswith("(stage 1 recorded no reusable lookups)")
     clipped = build_dossier([{"name": "read_file", "arguments": {}, "content": "z" * 20}], 1000, per_result_chars=10)
     assert "clipped in dossier" in clipped
+
+
+def test_run_details_count_the_agent_runs_of_a_longer_pipeline():
+    from zephyr_reviewer.review.agent import RunResult
+    from zephyr_reviewer.review.openrouter import Usage
+    from zephyr_reviewer.review.render import run_details
+
+    pr = PullRequest(1, "t", "", "", "main", "b" * 40, "pr", "a" * 40, "", False)
+    stage = {"models": ["m/one"], "steps": 2}
+    stages = [{**stage, "stage": name} for name in ("logic@m/one", "verification", "H1+H2", "report")]
+    run = RunResult(None, 8, Usage(), ["m/one"], False, stages=stages)
+    assert "in 4 agent runs, logic@m/one: m/one (2 step(s)) then verification:" in run_details(run, pr)
+    run.stages = stages[:2]
+    assert "in two stages, logic@m/one: m/one (2 step(s)) then verification:" in run_details(run, pr)
+    run.stages = stages[:1]
+    assert "stages" not in run_details(run, pr) and "with m/one via OpenRouter" in run_details(run, pr)
