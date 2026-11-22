@@ -402,6 +402,46 @@ async def test_a_lookup_cut_off_when_the_run_is_asked_to_submit_is_not_asked_for
     assert run.review is not None and "`read_file` reached the output limit" in answer and "Call it again" in answer
 
 
+async def test_the_transcript_keeps_what_a_refused_submission_said(mini_repo):
+    half = {"id": "c1", "type": "function", "function": {"name": "submit_review", "arguments": ""}}
+    half["function"]["arguments"] = json.dumps(GOOD_REVIEW)[:-40]
+    cut = _completion({"content": "", "tool_calls": [half]})
+    cut["usage"]["completion_tokens"] = 8000
+    long = {"summary": "x" * 9000}
+    nothing = _completion({"content": "", "tool_calls": [_tool_call("c0", "submit_review", {})]})
+    nothing["usage"]["completion_tokens"] = 8000
+    script = ScriptedOpenRouter(
+        [
+            cut,
+            _completion({"content": "", "tool_calls": [half]}),
+            nothing,
+            _completion({"content": "", "tool_calls": [_tool_call("c2", "submit_review", {"summary": "x"})]}),
+            _completion({"content": "", "tool_calls": [_tool_call("c3", "submit_review", long)]}),
+            _completion({"content": "", "tool_calls": [_tool_call("c4", "submit_review", GOOD_REVIEW)]}),
+        ]
+    )
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None
+    unreadable = [t for t in run.transcript if t["kind"] == "tool_call_unreadable"]
+    assert [(t["step"], t["name"], t["cut_off"]) for t in unreadable] == [
+        (1, "submit_review", True),
+        (2, "submit_review", False),
+    ]
+    assert all(t["arguments"] == half["function"]["arguments"] and t["error"] for t in unreadable)
+    submissions = [t for t in run.transcript if t["kind"] == "tool_call" and t.get("terminal")]
+    assert [(t["step"], t["ok"]) for t in submissions] == [(3, False), (4, False), (5, False), (6, True)]
+    # Parsed, but nothing in it, from an answer at the output limit: marked as the cut-off call it was.
+    assert (submissions[0]["arguments"], submissions[0]["cut_off"]) == ("{}", True) and submissions[0]["errors"]
+    assert (submissions[1]["arguments"], submissions[1]["cut_off"]) == ('{"summary": "x"}', False)
+    assert any(e.startswith("verdict must be one of") for e in submissions[1]["errors"])
+    # A long one is kept to its beginning, with a note of how much is missing.
+    assert submissions[2]["arguments"].startswith('{"summary": "xxxx') and len(submissions[2]["arguments"]) < 4100
+    assert submissions[2]["arguments"].endswith("more characters]")
+    assert "arguments" not in submissions[3] and "cut_off" not in submissions[3]  # accepted: it is in the result
+    # Neither kind is a lookup.
+    assert run.tool_call_count == 0
+
+
 async def test_agent_gives_up_after_repeated_rejections(mini_repo):
     bad = _completion({"content": "", "tool_calls": [_tool_call("c", "submit_review", {"summary": "x"})]})
     script = ScriptedOpenRouter([bad, bad, bad, bad])

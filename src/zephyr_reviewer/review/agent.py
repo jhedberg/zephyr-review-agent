@@ -393,17 +393,38 @@ async def run_agent(
                     # JSON was invalid, a model sends the same arguments again wrapped up as text.
                     content = cut_off_call(name)
                     cut_off_submissions += int(name == terminal.name)
+                detail(f"{tag}[step {step}] {name}: unreadable arguments ({exc})")
+                transcript.append(
+                    {
+                        "kind": "tool_call_unreadable",
+                        "step": step,
+                        "name": name,
+                        "error": str(exc),
+                        "cut_off": cut,
+                        "arguments": _clipped(raw_args),
+                    }
+                )
             parsed.append((tc, name, args, content, cut))
 
         answers: dict[int, str] = {}
-        for i, (_tc, name, args, content, cut) in enumerate(parsed):
+        for i, (tc, name, args, content, cut) in enumerate(parsed):
             if args is None:
                 answers[i] = content
             elif name == terminal.name:
                 output, errs = terminal.parse(args)
-                transcript.append(
-                    {"kind": "tool_call", "step": step, "name": name, "terminal": True, "ok": not errs, "errors": errs}
-                )
+                entry = {
+                    "kind": "tool_call",
+                    "step": step,
+                    "name": name,
+                    "terminal": True,
+                    "ok": not errs,
+                    "errors": errs,
+                }
+                if errs:
+                    # What was sent, as it was sent: the errors alone do not say what the model got wrong.
+                    entry["arguments"] = _clipped((tc.get("function") or {}).get("arguments") or "")
+                    entry["cut_off"] = cut
+                transcript.append(entry)
                 if output is not None and not errs:
                     detail(f"{tag}[step {step}] {terminal.describe(output)}")
                     return done(output, step)
@@ -485,6 +506,16 @@ def _at_output_limit(result, llm) -> bool:
         return False
     limit = int(getattr(llm, "max_tokens", 0) or 0)
     return limit > 0 and int((result.usage or {}).get("completion_tokens") or 0) >= limit
+
+
+KEPT_ARGUMENT_CHARS = 4000  # of arguments that were rejected or could not be read, in the transcript
+
+
+def _clipped(raw: Any) -> str:
+    text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
+    if len(text) <= KEPT_ARGUMENT_CHARS:
+        return text
+    return f"{text[:KEPT_ARGUMENT_CHARS]}... [{len(text) - KEPT_ARGUMENT_CHARS} more characters]"
 
 
 def _cut_off(result, llm) -> bool:
