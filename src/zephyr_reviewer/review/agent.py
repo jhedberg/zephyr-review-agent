@@ -21,8 +21,19 @@ from .text import without_surrogates
 
 def tool_arguments(raw: str | dict[str, Any]) -> dict[str, Any]:
     """A tool call's arguments as the model sent them, parsed and made encodable: a \\ud83d escape in the
-    JSON becomes a lone surrogate on parsing, which no transport, file or request could carry."""
-    return without_surrogates(json.loads(raw) if isinstance(raw, str) else dict(raw))
+    JSON becomes a lone surrogate on parsing, which no transport, file or request could carry.
+
+    A model told that its arguments were not valid JSON may send them again as text inside an object of
+    its own making, ``{"arguments": "{...}"}``, or as one JSON string. Either holds exactly one set of
+    arguments, so it is read as those, and not answered with errors about fields that are in fact there."""
+    args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    inner = args["arguments"] if isinstance(args, dict) and set(args) == {"arguments"} else args
+    if isinstance(inner, str):
+        try:
+            inner = json.loads(inner)
+        except (ValueError, RecursionError):  # not JSON, or JSON that json will not load (a 5000-digit number)
+            inner = None
+    return without_surrogates(inner if isinstance(inner, dict) else args)
 
 
 @dataclass

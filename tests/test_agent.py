@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
 from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.mcp_server import build_server
@@ -266,6 +267,37 @@ async def test_agent_nudges_prose_and_handles_unknown_tools_and_bad_json(mini_re
     assert any(m["role"] == "user" and "prose instead of a tool call" in m["content"] for m in msgs)
     tool_msgs = [m for m in msgs if m["role"] == "tool"]
     assert "not valid JSON" in tool_msgs[0]["content"] and "unknown tool" in tool_msgs[1]["content"]
+
+
+def test_arguments_sent_as_text_are_read_as_the_arguments_they_hold():
+    from zephyr_reviewer.review.agent import tool_arguments
+
+    args = {"concerns": [{"title": "t", "problem": "p"}], "dismissed": []}
+    assert tool_arguments(json.dumps(args)) == args
+    # What a model sends after being told that its arguments were not valid JSON: the same, as text.
+    assert tool_arguments(json.dumps({"arguments": json.dumps(args)})) == args
+    assert tool_arguments(json.dumps({"arguments": args})) == args
+    assert tool_arguments(json.dumps(json.dumps(args))) == args
+    assert tool_arguments({"arguments": json.dumps(args)}) == args
+    # Anything that is not exactly one set of arguments is left as it came, for the tool to judge.
+    assert tool_arguments('{"arguments": "not json"}') == {"arguments": "not json"}
+    digits = "9" * 5000  # more than json converts: text that happens to be all digits stays the text it is
+    assert tool_arguments(json.dumps({"arguments": digits})) == {"arguments": digits}
+    assert tool_arguments(json.dumps(digits)) == digits
+    assert tool_arguments('{"arguments": "[1, 2]"}') == {"arguments": "[1, 2]"}
+    assert tool_arguments('{"arguments": "{}", "path": "a.c"}') == {"arguments": "{}", "path": "a.c"}
+    assert tool_arguments('"plain text"') == "plain text" and tool_arguments("[1]") == [1]
+    with pytest.raises(json.JSONDecodeError):
+        tool_arguments('{"concerns": [')
+
+
+async def test_a_submission_wrapped_up_as_text_is_accepted(mini_repo):
+    wrapped = {"id": "c1", "type": "function", "function": {"name": "submit_review", "arguments": ""}}
+    wrapped["function"]["arguments"] = json.dumps({"arguments": json.dumps(GOOD_REVIEW)})
+    script = ScriptedOpenRouter([_completion({"content": "", "tool_calls": [wrapped]})])
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and run.errors == [] and len(script.requests) == 1
+    assert run.review.summary == GOOD_REVIEW["summary"]
 
 
 async def test_agent_gives_up_after_repeated_rejections(mini_repo):
