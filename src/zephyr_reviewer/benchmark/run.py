@@ -154,6 +154,8 @@ def load_entry_result(d: Path) -> EntryResult | None:
 
 
 def _tool_calls_from_transcript(d: Path) -> int:
+    """The lookups of a saved run, counted as the run itself counted them (RunResult.tool_call_count): a
+    stage's submission is not one."""
     p = d / "transcript.jsonl"
     if not p.exists():
         return 0
@@ -163,7 +165,7 @@ def _tool_calls_from_transcript(d: Path) -> int:
             t = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if t.get("kind") == "tool_call" and t.get("name") != "submit_review":
+        if t.get("kind") == "tool_call" and t.get("name") != "submit_review" and not t.get("terminal"):
             n += 1
     return n
 

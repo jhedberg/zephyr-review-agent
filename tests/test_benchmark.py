@@ -321,6 +321,28 @@ def test_benchmark_mine_and_run_commands(history, stub, tmp_path, monkeypatch, c
     assert report2["summary"]["resources"]["tokens"]["mean"] == 110.0  # resources recovered from saved artifacts
 
 
+def test_a_replayed_run_counts_its_lookups_as_the_run_did(tmp_path):
+    from zephyr_reviewer.benchmark.run import _tool_calls_from_transcript
+    from zephyr_reviewer.review.agent import RunResult
+    from zephyr_reviewer.review.openrouter import Usage
+
+    transcript = [
+        {"kind": "assistant", "stage": "logic@m", "tool_calls": ["read_file", "search"]},
+        {"kind": "tool_call", "stage": "logic@m", "name": "read_file"},
+        {"kind": "tool_call", "stage": "logic@m", "name": "search"},
+        {"kind": "tool_call", "stage": "logic@m", "name": "submit_concerns", "terminal": True, "ok": True},
+        {"kind": "tool_call", "stage": "verification", "name": "submit_verification", "terminal": True, "ok": False},
+        {"kind": "tool_call", "stage": "H1", "name": "kconfig_symbol"},
+        {"kind": "tool_refused", "stage": "H1", "name": "read_file"},
+        {"kind": "tool_call", "stage": "H1", "name": "submit_hard_case_verdict", "terminal": True, "ok": True},
+        {"kind": "tool_call", "name": "submit_review"},
+    ]
+    (tmp_path / "transcript.jsonl").write_text("".join(json.dumps(t) + "\n" for t in transcript))
+    live = RunResult(None, 0, Usage(), [], False, transcript=transcript).tool_call_count
+    assert _tool_calls_from_transcript(tmp_path) == live == 3
+    assert _tool_calls_from_transcript(tmp_path / "missing") == 0
+
+
 def test_render_summary_handles_empty_report():
     report = {
         "metadata": {
