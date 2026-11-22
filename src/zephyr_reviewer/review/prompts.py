@@ -329,6 +329,15 @@ def cut_off(tool: str = SUBMIT_TOOL_NAME) -> str:
     )
 
 
+def cut_off_call(tool: str) -> str:
+    """For a tool call whose arguments end in the middle: the answer reached the output limit."""
+    return (
+        f"ERROR: the call of `{tool}` reached the output limit before its arguments were complete, so none of "
+        "them were received; the limit covers your reasoning too. Call it again right away, with the same "
+        "parameters as the tool defines them, and keep every text field short."
+    )
+
+
 def budget_exhausted(tool: str = SUBMIT_TOOL_NAME) -> str:
     return (
         f"The step budget is exhausted. Call `{tool}` now with what you have verified so far. "
