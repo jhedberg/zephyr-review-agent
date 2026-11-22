@@ -338,7 +338,9 @@ def _norm_enum(value: Any, allowed: list[str], default: str) -> str:
         "major": "high",
         "blocker": "critical",
     }
-    return aliases.get(v, default)
+    # An alias stands for a value of another field as well: "major" is a severity, not a verdict.
+    alias = aliases.get(v, default)
+    return alias if alias in allowed else default
 
 
 def parse_review(args: dict[str, Any], changed_lines: dict[str, set[int]]) -> tuple[Review | None, list[str]]:
