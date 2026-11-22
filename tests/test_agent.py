@@ -514,7 +514,8 @@ async def test_a_model_that_keeps_reasoning_its_answers_away_is_asked_to_submit_
     assert asked.startswith(script.requests[0]["messages"][-1]["content"])
     assert "reached the output limit before any text or tool call arrived" in asked
     assert "call `submit_review` now" in asked
-    assert all(r.get("reasoning") == {"effort": "low"} for r in script.requests[1:])
+    # One step down while it goes on, all the way down once it is asked to submit.
+    assert [r.get("reasoning") for r in script.requests] == [None, {"effort": "low"}] + [{"effort": "none"}] * 4
 
 
 async def test_a_forced_submission_reasoned_away_still_gets_every_way_through(mini_repo):
@@ -603,3 +604,153 @@ async def test_only_a_refusal_of_the_reasoning_field_is_retried_without_it(mini_
     script, requests = scripted(400, "reasoning token limit is unsupported for this model")
     run, _, _ = await _run(mini_repo, script)
     assert run.review is not None and ["reasoning" in r for r in requests] == [False, True, False]
+
+
+async def test_asked_to_submit_a_cut_off_answer_turns_reasoning_off_at_once(mini_repo):
+    # A model that reasons its limit away at low effort as at default gets its submission through with
+    # reasoning switched off, and a forced submission has few turns to find that out in.
+    script = ScriptedOpenRouter([_reasoned_away(), _submit()])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is not None and run.steps == 2
+    assert [r.get("reasoning") for r in script.requests] == [None, {"effort": "none"}]
+    assert [r["tool_choice"] for r in script.requests] == [NAMED, NAMED]
+
+
+async def test_a_setting_a_route_refuses_falls_back_within_the_step_and_is_not_asked_for_again(mini_repo):
+    def scripted(refuse: dict, replies: list[dict]):
+        requests: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if payload.get("reasoning") == refuse:
+                message = "Reasoning is mandatory for this endpoint and cannot be disabled."
+                return httpx.Response(400, json={"error": {"message": message, "code": 400}})
+            return httpx.Response(200, json=replies.pop(0))
+
+        script = ScriptedOpenRouter([])
+        script.handler = handler  # type: ignore[method-assign]
+        return script, requests
+
+    # Reasoning cannot be switched off on this route: asked to submit, the request falls back to low
+    # effort in the same step, and a later cut-off does not try "none" again.
+    script, requests = scripted({"effort": "none"}, [_reasoned_away(), _reasoned_away(), _submit()])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is not None and run.steps == 3
+    assert [r.get("reasoning") for r in requests] == [None, {"effort": "none"}, {"effort": "low"}, {"effort": "low"}]
+    # Low effort is not taken on this route: the request goes out without the field. A later cut-off while
+    # the investigation goes on changes nothing, and one when asked to submit switches reasoning off.
+    read = _tool_call("c1", "read_file", {"path": "drivers/i2c/i2c_foo.c", "start_line": 9, "end_line": 21})
+    lookup = _completion({"content": "", "tool_calls": [read]})
+    replies = [_reasoned_away(), lookup, _reasoned_away(), lookup, _reasoned_away(), _submit()]
+    script, requests = scripted({"effort": "low"}, replies)
+    run, _, _ = await _run(mini_repo, script, max_steps=5)
+    assert run.review is not None and run.steps == 6
+    assert [r.get("reasoning") for r in requests] == [
+        None,
+        {"effort": "low"},
+        None,
+        None,
+        None,
+        None,
+        {"effort": "none"},
+    ]
+    # Both refused: the request is made a third time in the same step, as the model's default.
+    requests = []
+
+    def neither(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if "reasoning" in payload:
+            return httpx.Response(400, json={"error": {"message": "Unsupported effort value", "code": 400}})
+        return httpx.Response(200, json=(_submit() if len(requests) > 2 else _reasoned_away()))
+
+    script = ScriptedOpenRouter([])
+    script.handler = neither  # type: ignore[method-assign]
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is not None and run.steps == 2
+    assert [r.get("reasoning") for r in requests] == [None, {"effort": "none"}, {"effort": "low"}, None]
+
+
+async def test_reasoning_is_switched_off_only_for_a_submission_that_is_asked_for(mini_repo):
+    # Cut off again and again while it investigates, the model stays at low effort: with reasoning switched
+    # off it would go on as another reviewer than the one that was asked for.
+    read = _tool_call("c1", "read_file", {"path": "drivers/i2c/i2c_foo.c", "start_line": 9, "end_line": 21})
+    lookup = _completion({"content": "", "tool_calls": [read]})
+    script = ScriptedOpenRouter([_reasoned_away(), lookup, _reasoned_away(), lookup, _reasoned_away(), _submit()])
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and not run.forced
+    assert [r.get("reasoning") for r in script.requests] == [None] + [{"effort": "low"}] * 5
+
+
+async def test_a_failure_that_is_not_about_the_setting_is_not_taken_for_a_refusal(mini_repo):
+    def scripted(status: int, message: str):
+        requests: list[dict] = []
+        replies = [_reasoned_away(), _submit()]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if "reasoning" in payload:
+                return httpx.Response(status, json={"error": {"message": message, "code": status}})
+            return httpx.Response(200, json=replies.pop(0))
+
+        script = ScriptedOpenRouter([])
+        script.handler = handler  # type: ignore[method-assign]
+        return script, requests
+
+    # A rejected key and an outage are what they are, also when their text happens to say "reasoning".
+    for status, message in ((401, "Reasoning service denied for this key"), (503, "reasoning backend overloaded")):
+        script, requests = scripted(status, message)
+        run, _, _ = await _run(mini_repo, script)
+        assert run.review is None and run.errors[0].startswith(f"model request failed: HTTP {status}")
+        assert all("reasoning" in r for r in requests[1:])  # never retried without the field
+    # A client error about the effort value is a refusal, whether or not it says "reasoning".
+    script, requests = scripted(400, "Unsupported effort value: low")
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and ["reasoning" in r for r in requests] == [False, True, False]
+
+    # The same holds for an error that arrives in the body of a 200 response, where the code is all there is.
+    def in_band(code: int, message: str):
+        requests: list[dict] = []
+        replies = [_reasoned_away(), _submit()]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if "reasoning" in payload:
+                return httpx.Response(200, json={"error": {"message": message, "code": code}})
+            return httpx.Response(200, json=replies.pop(0))
+
+        script = ScriptedOpenRouter([])
+        script.handler = handler  # type: ignore[method-assign]
+        return script, requests
+
+    script, requests = in_band(401, "effort service denied")
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is None and ["reasoning" in r for r in requests] == [False, True]
+    script, requests = in_band(400, "Unsupported effort value")
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and ["reasoning" in r for r in requests] == [False, True, False]
+
+
+async def test_a_lookup_asked_for_after_the_budget_is_not_run(mini_repo):
+    # Two empty answers to the forced choice, then any tool is accepted, and the model asks to read a file.
+    read = _tool_call("c1", "read_file", {"path": "drivers/i2c/i2c_foo.c", "start_line": 9, "end_line": 21})
+    prose = _completion({"content": "I will submit now."})
+    script = ScriptedOpenRouter([prose, prose, _completion({"content": "", "tool_calls": [read]}), _submit()])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is not None and run.steps == 4
+    assert [r["tool_choice"] for r in script.requests] == [NAMED, NAMED, "required", "required"]
+    answer = script.requests[3]["messages"][-1]
+    assert answer["role"] == "tool" and answer["name"] == "read_file"
+    assert answer["content"].startswith("Not run: the budget is exhausted.") and "submit_review" in answer["content"]
+    assert run.tool_results == [] and run.tool_call_count == 0  # nothing was read, and nothing counts as read
+    assert [t["name"] for t in run.transcript if t["kind"] == "tool_refused"] == ["read_file"]
+    # With any tool accepted, the terminal tool is the only one offered.
+    offered = [[t["function"]["name"] for t in r["tools"]] for r in script.requests]
+    assert len(offered[0]) > 1 and offered[0] == offered[1] and offered[2] == offered[3] == ["submit_review"]
+    # Before the budget is out the same call is run.
+    script = ScriptedOpenRouter([_completion({"content": "", "tool_calls": [read]}), _submit()])
+    run, _, _ = await _run(mini_repo, script)
+    assert [r["name"] for r in run.tool_results] == ["read_file"]

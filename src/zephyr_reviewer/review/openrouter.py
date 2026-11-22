@@ -29,7 +29,12 @@ RETRY_STATUSES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 52
 
 
 class OpenRouterError(RuntimeError):
-    pass
+    """A request that failed. ``status`` is the HTTP status, or the code of an error that arrived in the
+    body of a 200 response; None when there is none (a transport failure, attempts used up)."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class ContextLengthError(OpenRouterError):
@@ -41,6 +46,14 @@ _CONTEXT_LENGTH = re.compile(
     r"|exceeds? the (?:maximum|limit)|reduce the length|token limit",
     re.I,
 )
+
+
+def _status(code: Any) -> int | None:
+    """The code of an error body as a status, when it is one."""
+    try:
+        return int(code)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_context_length(status: int, text: str) -> bool:
@@ -192,8 +205,8 @@ class OpenRouter:
                 continue
             if resp.status_code >= 400:
                 if _is_context_length(resp.status_code, resp.text):
-                    raise ContextLengthError(f"HTTP {resp.status_code}: {resp.text[:600]}")
-                raise OpenRouterError(f"HTTP {resp.status_code}: {resp.text[:1000]}")
+                    raise ContextLengthError(f"HTTP {resp.status_code}: {resp.text[:600]}", resp.status_code)
+                raise OpenRouterError(f"HTTP {resp.status_code}: {resp.text[:1000]}", resp.status_code)
             data = resp.json()
             if "error" in data and not data.get("choices"):
                 err = data["error"]
@@ -204,8 +217,8 @@ class OpenRouter:
                     self._retry(attempt, None, last_error)
                     continue
                 if _is_context_length(int(code or 400), msg):
-                    raise ContextLengthError(f"OpenRouter error: {msg}")
-                raise OpenRouterError(f"OpenRouter error: {msg}")
+                    raise ContextLengthError(f"OpenRouter error: {msg}", _status(code))
+                raise OpenRouterError(f"OpenRouter error: {msg}", _status(code))
             choices = data.get("choices") or []
             if not choices:
                 raise OpenRouterError(f"no choices in response: {json.dumps(data)[:500]}")

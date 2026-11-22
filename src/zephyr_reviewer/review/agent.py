@@ -150,8 +150,8 @@ async def run_agent(
     forced_misses = 0
     cut_offs = 0  # answers in a row that ended at the output limit with nothing in them
     forced_cut_offs = 0  # ... of them while the model was asked to submit
-    reasoning: dict[str, Any] | None = None  # the model's default until an answer is cut off
-    reasoning_refused = False  # a request asking for less reasoning failed: not every route takes the field
+    rung = -1  # how far reasoning is turned down, an index into LESS_REASONING; -1 is the model's default
+    refused: set[int] = set()  # rungs a route rejected: not every model takes every setting
 
     def done(output: Any, step: int) -> AgentResult:
         seconds = time.monotonic() - started
@@ -224,17 +224,31 @@ async def run_agent(
             # back to "required" (any tool), which the loop then steers to the terminal tool by rejection.
             tool_choice = {"type": "function", "function": {"name": terminal.name}} if forced_misses < 2 else "required"
 
+        # "required" means any tool, and the only one wanted by then is the terminal one: offer no other.
+        offered = [terminal.schema] if tool_choice == "required" else tools
         approx_tokens = sum(len(str(m.get("content") or "")) for m in messages) // 4
         detail(f"{tag}[step {step}] waiting for {llm.models[0]} ({len(messages)} messages, ~{approx_tokens:,} tokens)")
         t_call = time.monotonic()
         try:
-            result = await _chat_with_heartbeat(llm, messages, tools, tool_choice, detail, tag, step, reasoning)
+            while True:
+                reasoning = LESS_REASONING[rung] if rung >= 0 else None
+                try:
+                    result = await _chat_with_heartbeat(
+                        llm, messages, offered, tool_choice, detail, tag, step, reasoning
+                    )
+                    break
+                except OpenRouterError as exc:
+                    if reasoning is None or not _refuses_reasoning(exc):
+                        raise
+                    # Turning reasoning down is a remedy, not a requirement. A route that rejects a setting
+                    # (one model cannot have reasoning switched off, another may not take the field at all)
+                    # gets the request again with the setting below it, and is not asked for that one again.
+                    refused.add(rung)
+                    rung = max((r for r in range(rung) if r not in refused), default=-1)
+                    detail(
+                        f"{tag}[step {step}] reasoning {reasoning} refused ({str(exc)[:120]}); trying the next lower"
+                    )
         except ContextLengthError as exc:
-            if reasoning is not None and _refuses_reasoning(exc):
-                # A refusal of the field worded like a size limit: not a history to compact.
-                reasoning, reasoning_refused = None, True
-                detail(f"{tag}[step {step}] request with a reasoning effort failed; retrying without")
-                continue
             compactions += 1
             # First elide older tool results and retry; then everything and force submission; then give up.
             elided = compact_history(messages, keep_recent=4) if compactions == 1 else 0
@@ -252,13 +266,6 @@ async def run_agent(
             detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
         except OpenRouterError as exc:
-            if reasoning is not None and _refuses_reasoning(exc) and step < max_steps + GRACE_STEPS:
-                # Asking for less reasoning is a remedy, not a requirement: a route that rejects the field
-                # gets the request again without it, at the cost of this step. Any other failure is what it
-                # would be without the field, and so is a rejection with no step left to retry in.
-                reasoning, reasoning_refused = None, True
-                detail(f"{tag}[step {step}] request with a reasoning effort failed; retrying without")
-                continue
             errors.append(f"model request failed: {str(exc)[:500]}")
             detail(f"{tag}[step {step}] {errors[-1]}")
             return done(None, step)
@@ -277,9 +284,9 @@ async def run_agent(
         if _cut_off(result, llm):
             # The output limit covers reasoning and answer together, and nothing but reasoning fit. The turn
             # is not kept: its reasoning, sent back, makes every later request that much longer and leads
-            # to the same end. The request is made again from the history as it was, asking for less
-            # reasoning from here on (changing the effort once costs the cached prefix once; changing it
-            # back would cost it again).
+            # to the same end. The request is made again from the history as it was, with reasoning turned
+            # down from here on (changing it once costs the cached prefix once; changing it back would cost
+            # it again). How far depends on what is asked: see LESS_REASONING.
             cut_offs += 1
             transcript.append(
                 {
@@ -293,8 +300,6 @@ async def run_agent(
                 }
             )
             detail(f"{tag}[step {step}] the answer ended at the output limit with nothing in it ({cut_offs} in a row)")
-            if not reasoning_refused:
-                reasoning = LESS_REASONING
             if forced:
                 # As for any empty answer to a forced choice: after two, any tool will do. A run that is
                 # asked to submit this many times and never gets an answer through has nothing to give.
@@ -317,6 +322,13 @@ async def run_agent(
                     messages[-1] = {**last, "content": last["content"] + "\n\n" + cut_off(terminal.name)}
                 else:
                     messages.append({"role": "user", "content": cut_off(terminal.name)})
+            # While the investigation goes on, low effort is as far as it goes, however often an answer is
+            # cut off: a model with reasoning switched off is not the reviewer that was asked for. Asked to
+            # submit, the thinking is done and the turns are few: all the way down.
+            last = len(LESS_REASONING) - 1 if forced else 0
+            lower = [r for r in range(rung + 1, last + 1) if r not in refused]
+            if lower:
+                rung = lower[-1]
             continue
         cut_offs = forced_cut_offs = 0
         messages.append(assistant_message_for_history(result.message))
@@ -378,8 +390,15 @@ async def run_agent(
                     return done(None, step)
                 answers[i] = rejection_message(errs, terminal.name)
             elif name not in local and not (bridge is not None and name in bridge_names):
-                available = ", ".join(sorted(bridge_names | set(local)))
-                answers[i] = f"ERROR: unknown tool {name!r}. Available: {available}, {terminal.name}."
+                # What was offered in this request: under "required" that is the terminal tool alone.
+                available = ", ".join(sorted(t["function"]["name"] for t in offered))
+                answers[i] = f"ERROR: unknown tool {name!r}. Available: {available}."
+            elif forced:
+                # The model is asked to submit. A lookup it asks for instead (the named choice is not binding
+                # on every provider, and a model may call a tool it is not offered) is not run, or the last
+                # turns go to reading instead of to the submission.
+                answers[i] = f"Not run: the budget is exhausted. {budget_exhausted(terminal.name)}"
+                transcript.append({"kind": "tool_refused", "step": step, "name": name, "arguments": args})
 
         pending = [i for i in range(len(parsed)) if i not in answers]
         results = await asyncio.gather(*(lookup(step, parsed[i][1], parsed[i][2] or {}) for i in pending))
@@ -392,14 +411,25 @@ async def run_agent(
 
 
 MAX_CUT_OFFS = 2  # answers in a row cut off with nothing in them before the model is asked to submit
-LESS_REASONING = {"effort": "low"}  # OpenRouter: about a fifth of the output limit, the rest is for the answer
+# OpenRouter's `reasoning` request field, in the order it is turned down after an answer is cut off. Low
+# effort is documented as about a fifth of the output limit, but it is a request: one draft model reasons
+# its 8000 tokens away at low effort as at default, and gets through with reasoning switched off; another
+# gets through at low and refuses "none" ("Reasoning is mandatory for this endpoint"). So both, in order.
+LESS_REASONING: tuple[dict[str, Any], ...] = ({"effort": "low"}, {"effort": "none"})
+
+
+REFUSAL_STATUSES = (400, 404, 422)  # the request as made is not accepted
 
 
 def _refuses_reasoning(exc: Exception) -> bool:
-    """A failed request that names the reasoning field as its reason: the route does not take it. A
-    transient failure, a rejected key or a full context says nothing about the field."""
+    """A failed request that was rejected for its reasoning setting: the route does not take it. That is a
+    client error naming the field or its effort ("Reasoning is mandatory for this endpoint", "unsupported
+    effort value"). A rejected key, an outage and a failure after the client's own attempts say nothing
+    about the setting, whatever words they use."""
+    if getattr(exc, "status", None) not in REFUSAL_STATUSES:
+        return False
     text = str(exc).lower()
-    return "reasoning" in text and "giving up after" not in text
+    return "reasoning" in text or "effort" in text
 
 
 def _cut_off(result, llm) -> bool:
@@ -443,14 +473,22 @@ async def _chat_with_heartbeat(llm, messages, tools, tool_choice, log, tag: str,
 
 
 ELIDED = "[tool result elided to fit the context window; call the tool again if you still need it]"
+ELIDED_FOR_GOOD = "[tool result elided to fit the context window]"  # when no tool will be run again
 
 
 def compact_history(messages: list[dict[str, Any]], keep_recent: int = 4) -> int:
-    """Replace the content of older tool results with a short note; returns how many were elided."""
-    tool_idx = [i for i, m in enumerate(messages) if m.get("role") == "tool" and m.get("content") != ELIDED]
+    """Replace the content of older tool results with a short note; returns how many were elided. With
+    ``keep_recent=0`` everything goes and the run is asked to submit next, so the note no longer invites
+    the model to call the tool again: a lookup would not be run."""
+    notes = (ELIDED, ELIDED_FOR_GOOD)
+    tool_idx = [i for i, m in enumerate(messages) if m.get("role") == "tool" and m.get("content") not in notes]
     victims = tool_idx[: max(0, len(tool_idx) - keep_recent)] if keep_recent else tool_idx
     for i in victims:
-        messages[i]["content"] = ELIDED
+        messages[i]["content"] = ELIDED if keep_recent else ELIDED_FOR_GOOD
+    if not keep_recent:
+        for m in messages:
+            if m.get("role") == "tool" and m.get("content") == ELIDED:
+                m["content"] = ELIDED_FOR_GOOD
     return len(victims)
 
 
