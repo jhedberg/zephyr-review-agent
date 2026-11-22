@@ -1252,6 +1252,62 @@ async def test_when_every_pass_returns_nothing_there_is_no_review(mini_repo):
     assert run.review.confidence == "medium"
 
 
+class DoubtedDismissalRouter(StageRouter):
+    """Verification doubts a dismissal and sends it to a hard case of its own, which never answers."""
+
+    def handler(self, request):
+        body = json.loads(request.content)
+        tools = {t["function"]["name"] for t in body["tools"]}
+        if "submit_verification" in tools:
+            self.requests.append(body)
+            lock = _finding("Early return leaks the bus lock", file="drivers/i2c/i2c_foo.c", line=17, severity="high")
+            out = {
+                "findings": [{**lock, "source_ids": ["C1"]}],
+                "dismissed": [],
+                "hard_cases": [{"source_ids": ["D1"], "question": "is one the right count?", "severity_hint": "low"}],
+            }
+            return httpx.Response(
+                200, json=_completion({"content": "", "tool_calls": [_tc("v", "submit_verification", out)]})
+            )
+        if "submit_hard_case_verdict" in tools:
+            self.requests.append(body)
+            return httpx.Response(200, json=_completion({"content": "I cannot tell from here.", "tool_calls": []}))
+        return super().handler(request)
+
+
+async def test_a_dismissal_whose_hard_case_did_not_decide_is_accounted_for(mini_repo):
+    router = DoubtedDismissalRouter(verification_first_attempt_bad=False)
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    for llm in (cheap, strong):
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            cheap,
+            strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text="",
+            specialists=["concurrency"],
+            hard_case_max_steps=1,
+            log=lambda m: None,
+        )
+    assert run.review is not None and [f.title for f in run.review.findings] == ["Early return leaks the bus lock"]
+    assert any(e.startswith("hard case H1 undecided") for e in run.errors)
+    # The hard case had no concern to keep as a speculative finding, only the dismissal it was asked about.
+    (dismissal,) = run.review_map["dismissed_concerns"]
+    assert dismissal["id"] == "D1" and dismissal["title"] == "k_sem_init count"
+    assert (dismissal["fate"], dismissal["by"]) == ("undecided", "H1")
+    assert dismissal["note"] == "undecided; the dismissal stands"
+    assert [s["verdict"] for s in run.stages if s["stage"] == "H1"] == ["undecided"]
+
+
 class FailingVerification(StageRouter):
     """A router whose verification stage gets a provider error for its first ``failures`` requests."""
 
