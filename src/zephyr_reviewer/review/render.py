@@ -292,7 +292,8 @@ def run_details(run: RunResult, pr: PullRequest) -> str:
         how = " then ".join(
             f"{st['stage']}: {', '.join(st['models']) or 'unknown'} ({st['steps']} step(s))" for st in run.stages
         )
-        how = f"in two stages, {how},"
+        # One entry per agent run: a retried stage has two, and hard cases that share a run have one.
+        how = f"in {'two stages' if len(run.stages) == 2 else f'{len(run.stages)} agent runs'}, {how},"
     else:
         how = f"with {', '.join(run.models_used) or 'unknown model'}"
     return (
