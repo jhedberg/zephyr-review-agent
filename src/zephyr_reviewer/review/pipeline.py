@@ -666,7 +666,11 @@ def hard_cases_message(
     concerns: dict[str, Concern],
     dismissals: dict[str, Dismissal],
     drafters: list[str] | None = None,
+    steps: int = 0,
 ) -> str:
+    """The cases of one shared run. ``steps`` is the run's budget, which the cases share: the message says
+    so and asks for the lookups of all of them in each turn. Left to itself the verifier makes one tool call
+    per turn, which leaves each case a fraction of the lookups a case with a run of its own makes."""
     parts = [opening, "", f"# {len(batch)} hard cases, each decided on its own"]
     for case in batch:
         parts += [
@@ -686,6 +690,13 @@ def hard_cases_message(
         "These cases are unrelated to each other. Investigate each with the tools and decide it on its own "
         "evidence; a reason describes that one case and never refers to the others. Then call "
         "`submit_hard_case_verdicts` once, with one entry per case."
+    )
+    budget = (
+        f"You have {steps} turns for all {len(batch)} cases together" if steps > 0 else "The cases share your turns"
+    )
+    parts.append(
+        f"{budget}, so work on them side by side: in every turn call the tools for each case that still needs "
+        "a lookup, several tool calls in one answer, and never spend a turn on one case alone while others wait."
     )
     return "\n".join(parts)
 
@@ -757,6 +768,22 @@ async def primed(primer: Primer | None, run: Callable[[Callable[[], None] | None
         primer.release()
 
 
+def batch_hard_cases(cases: list[HardCase], max_single: int, batch: int) -> list[list[HardCase]]:
+    """How the hard cases are spread over agent runs. Up to ``max_single`` cases get a run each. With more,
+    the first ``max_single - 1`` do, and the rest share one run, or runs of at most ``batch`` cases when
+    ``batch`` is above zero.
+
+    A shared run has the step budget of a single case, so the number of cases in it decides how much each
+    gets looked at, and every further run is paid for at the price of the verification model. One run for
+    all of the rest is the cheapest and the default; on a large change it holds twenty or more cases."""
+    if len(cases) <= max_single:
+        return [[h] for h in cases]
+    single = cases[: max(max_single - 1, 0)]
+    rest = cases[len(single) :]
+    size = batch if batch > 0 else max(len(rest), 1)
+    return [[h] for h in single] + [rest[i : i + size] for i in range(0, len(rest), size)]
+
+
 def _sum_usage(parts: list[Usage]) -> Usage:
     u = Usage()
     for p in parts:
@@ -795,6 +822,7 @@ async def run_pipeline(
     hard_case_max_steps: int = 20,
     report_max_steps: int = 6,
     max_hard_cases: int = 8,
+    hard_case_batch: int = 0,
     max_context_tokens: int = 160_000,
     max_seconds: float = 0,
     extra_tools: list[LocalTool] | None = None,
@@ -1058,12 +1086,9 @@ async def run_pipeline(
             for sid in d["source_ids"]:
                 fates[sid] = {"fate": "dismissed", "by": "verification", "reason": d.get("reason", "")}
 
-        # 3. Hard cases, in parallel, highest severity first; the tail is batched into one stage.
+        # 3. Hard cases, in parallel, highest severity first; the tail shares one run, or a few if so set.
         cases = sorted(verification.hard_cases, key=lambda h: SEVERITIES.index(h.severity_hint))
-        if len(cases) > max_hard_cases:
-            batches = [[h] for h in cases[: max_hard_cases - 1]] + [cases[max_hard_cases - 1 :]]
-        else:
-            batches = [[h] for h in cases]
+        batches = batch_hard_cases(cases, max_hard_cases, hard_case_batch)
         system = base_system + "\n\n" + _stage_prompt("hard_case") + "\n\n" + guides
         # Single cases share system prompt, tools and opening: one goes first and the rest read them cached.
         case_primer = Primer() if prime and sum(1 for b in batches if len(b) == 1) > 1 else None
@@ -1076,14 +1101,14 @@ async def run_pipeline(
                 )
                 message = hard_case_message(opening, batch[0], by_c, by_d, drafters)
             else:
-                # The lower-severity tail shares one agent run to bound cost, but every case still gets its
+                # The lower-severity tail shares agent runs to bound cost, but every case still gets its
                 # own verdict and reason: a shared verdict would attach one explanation to unrelated concerns.
                 terminal = TerminalTool(
                     SUBMIT_HARD_CASES_TOOL,
                     make_hard_cases_parser([h.id for h in batch]),
                     lambda o, c=label: f"{c}: " + ", ".join(f"{v['case']} {v['verdict']}" for v in o["verdicts"]),
                 )
-                message = hard_cases_message(opening, batch, by_c, by_d, drafters)
+                message = hard_cases_message(opening, batch, by_c, by_d, drafters, hard_case_max_steps)
             res = await primed(
                 case_primer if len(batch) == 1 else None,
                 lambda hook: run_agent(

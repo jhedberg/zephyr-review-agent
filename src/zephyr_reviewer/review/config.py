@@ -54,6 +54,7 @@ class ReviewConfig:
     specialist_max_steps: int = 20
     hard_case_max_steps: int = 20
     max_hard_cases: int = 8
+    hard_case_batch: int = 0  # cases one shared run decides at most, beyond max_hard_cases; 0: all of them
     specialists: list[str] = field(default_factory=list)  # empty: planned from the change
     temperature: float = 0.1
     max_tokens: int = 8000
@@ -129,6 +130,7 @@ class ReviewConfig:
         cfg.specialist_max_steps = int(_env("specialist_max_steps", str(cfg.specialist_max_steps)))
         cfg.hard_case_max_steps = int(_env("hard_case_max_steps", str(cfg.hard_case_max_steps)))
         cfg.max_hard_cases = int(_env("max_hard_cases", str(cfg.max_hard_cases)))
+        cfg.hard_case_batch = int(_env("hard_case_batch", str(cfg.hard_case_batch)))
         cfg.specialists = _list(_env("specialists"))
         cfg.verify_max_steps = int(_env("verify_max_steps", str(cfg.verify_max_steps)))
         cfg.dossier_chars = int(_env("dossier_chars", str(cfg.dossier_chars)))

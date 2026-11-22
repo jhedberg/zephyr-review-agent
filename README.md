@@ -201,9 +201,10 @@ for automation.
    confirmed or sent to hard cases, never dropped here; a dismissal can be accepted only when it
    cites disproving code.
 4. **Hard cases**, in parallel, one per contested or speculative candidate up to `max_hard_cases`
-   (the rest share one run but are still decided one by one, each with its own reason), each with
-   tools and its own budget, confirming with a complete finding or
-   refuting with evidence. An undecided case is kept as speculative rather than lost.
+   (the rest share one run, or runs of at most `hard_case_batch` cases when that is set, and are
+   still decided one by one, each with its own reason), each with tools and its own budget,
+   confirming with a complete finding or refuting with evidence. An undecided case is kept as
+   speculative rather than lost.
 5. **Report**, without tools: summary, verdict and the issue-only assessments; the findings are
    fixed, and the verdict is forced to `request_changes` when a high or critical finding stands.
 

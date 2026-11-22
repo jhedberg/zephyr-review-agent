@@ -987,6 +987,72 @@ async def test_batched_hard_cases_keep_their_own_reasons(mini_repo):
     assert stage["verdict"] == "H1 confirmed, H2 refuted, H3 refuted"
 
 
+def test_the_cases_beyond_the_single_ones_share_one_run_or_runs_of_a_few_each():
+    from zephyr_reviewer.review.pipeline import HardCase, batch_hard_cases
+
+    def spread(n: int, max_single: int = 8, batch: int = 0) -> list[int]:
+        cases = [HardCase(f"H{i + 1}", [f"C{i + 1}"], "q", "medium") for i in range(n)]
+        batches = batch_hard_cases(cases, max_single, batch)
+        assert [h.id for b in batches for h in b] == [h.id for h in cases]  # every case once, order kept
+        return [len(b) for b in batches]
+
+    assert spread(0) == [] and spread(5) == [1] * 5 and spread(8) == [1] * 8  # up to the limit, a run each
+    # Without a limit, all of the rest share one run: the fewest runs of the verification model.
+    assert spread(9) == [1] * 7 + [2] and spread(29) == [1] * 7 + [22] and spread(29, batch=-3) == [1] * 7 + [22]
+    # With one, the rest is spread over runs of at most that many cases.
+    assert spread(29, batch=4) == [1] * 7 + [4, 4, 4, 4, 4, 2] and spread(9, batch=4) == [1] * 7 + [2]
+    assert spread(29, batch=22) == [1] * 7 + [22] and spread(29, batch=1) == [1] * 29
+    assert spread(3, max_single=1) == [3] and spread(5, max_single=1, batch=2) == [2, 2, 1]
+    assert spread(4, max_single=0) == [4] and spread(4, max_single=-1, batch=1) == [1] * 4  # every case decided
+    assert spread(0, max_single=-1) == [] and spread(0, max_single=0, batch=3) == []  # and none is none
+
+
+async def test_a_long_tail_of_hard_cases_is_decided_in_several_shared_runs(mini_repo):
+    router = BatchRouter(verification_first_attempt_bad=False)
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+    strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+    for llm in (cheap, strong):
+        llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+    claims = [Claim("X1", "drivers/i2c/Kconfig:20: I2C_BUS_RECOVERY is never defined", "drivers/i2c/Kconfig", 20, "e")]
+    claims += [
+        Claim(f"X{i}", f"drivers/i2c/i2c_foo.c:{10 + i}: point {i} is wrong", "drivers/i2c/i2c_foo.c", 10 + i, "e")
+        for i in range(2, 6)
+    ]
+    async with ToolBridge(build_server(intel)) as bridge:
+        run = await run_pipeline(
+            cheap,
+            strong,
+            bridge,
+            system_prompt(load_profile("zephyr"), "English"),
+            opening,
+            {f.path: f.new_side_lines for f in intel.files},
+            changed_files=[f.path for f in intel.files],
+            added_text="",
+            specialists=["intent"],
+            claims=claims,
+            max_hard_cases=1,
+            hard_case_batch=2,
+            log=lambda m: None,
+        )
+    assert run.review is not None and run.errors == []
+    # Five cases: two shared runs of two, and the last one alone, which is then an ordinary single case.
+    assert [s["stage"] for s in run.stages if s["stage"].startswith("H")] == ["H1+H2", "H3+H4", "H5"]
+    shared = [r for r in router.requests if "submit_hard_case_verdicts" in {t["function"]["name"] for t in r["tools"]}]
+    assert sorted(r["messages"][1]["content"].count("## Hard case H") for r in shared) == [2, 2]
+    assert all("# 2 hard cases, each decided on its own" in r["messages"][1]["content"] for r in shared)
+    # The run's turns are shared, and the message says so: all cases' lookups in every turn.
+    assert all(
+        "You have 20 turns for all 2 cases together, so work on them side by side" in r["messages"][1]["content"]
+        for r in shared
+    )
+    assert all("several tool calls in one answer" in r["messages"][1]["content"] for r in shared)
+    verdicts = {c.id: c.verdict for c in run.review.external_claims}
+    assert verdicts == {"X1": "confirmed", "X2": "refuted", "X3": "refuted", "X4": "refuted", "X5": "refuted"}
+
+
 async def test_findings_pruned_before_the_report_are_not_in_it(mini_repo):
     router = StageRouter()
     intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
