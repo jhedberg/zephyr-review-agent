@@ -496,6 +496,26 @@ def test_parse_review_keeps_only_problems_in_assessments():
     assert review is not None and review.test_assessment
 
 
+def test_an_alias_of_another_field_is_not_a_value_of_this_one():
+    finding = {"file": "a.c", "line": 3, "title": "t", "problem": "p"}
+    # "major", "blocker" and "nit" are other words for a severity. Where the severity they stand for is not
+    # a value of the field, they are nothing: "major" is no verdict, "blocker" and "nit" no confidence.
+    review, errors = parse_review({"summary": "ok", "verdict": "major", "findings": []}, {})
+    assert review is None and any(e.startswith("verdict must be one of") for e in errors)
+    review, errors = parse_review(
+        {
+            "summary": "ok",
+            "verdict": "changes requested",
+            "confidence": "blocker",
+            "findings": [{**finding, "severity": "major", "category": "nit", "confidence": "nit"}],
+        },
+        {"a.c": {3}},
+    )
+    assert not errors and review.verdict == "request_changes" and review.confidence == "medium"
+    f = review.findings[0]
+    assert (f.severity, f.category, f.confidence) == ("high", "bug", "medium")
+
+
 def test_parse_review_normalizes_vocabulary():
     review, errors = parse_review(
         {
