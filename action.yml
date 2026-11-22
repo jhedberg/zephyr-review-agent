@@ -74,9 +74,17 @@ inputs:
   max_hard_cases:
     description: >-
       multi-stage: hard cases verified individually, each in its own agent run; the rest share one
-      run but still get a verdict and reason each.
+      run (or several, see hard_case_batch) but still get a verdict and reason each.
     required: false
     default: "8"
+  hard_case_batch:
+    description: >-
+      multi-stage: hard cases one shared run decides at most; 0 puts all the cases beyond
+      max_hard_cases into one run. A shared run has the steps of a single case
+      (hard_case_max_steps), so more cases in it mean less looking per case, and a limit means
+      more runs of the verification model, which is about half of what a review costs.
+    required: false
+    default: "0"
   draft_fallback_models:
     description: "Comma-separated fallbacks for the draft model."
     required: false
@@ -370,6 +378,7 @@ runs:
         INPUT_SPECIALIST_MAX_STEPS: ${{ inputs.specialist_max_steps }}
         INPUT_HARD_CASE_MAX_STEPS: ${{ inputs.hard_case_max_steps }}
         INPUT_MAX_HARD_CASES: ${{ inputs.max_hard_cases }}
+        INPUT_HARD_CASE_BATCH: ${{ inputs.hard_case_batch }}
         INPUT_DRAFT_FALLBACK_MODELS: ${{ inputs.draft_fallback_models }}
         INPUT_DRAFT_ENSEMBLE: ${{ inputs.draft_ensemble }}
         INPUT_VERIFY_MAX_STEPS: ${{ inputs.verify_max_steps }}
