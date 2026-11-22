@@ -300,6 +300,108 @@ async def test_a_submission_wrapped_up_as_text_is_accepted(mini_repo):
     assert run.review.summary == GOOD_REVIEW["summary"]
 
 
+async def test_a_call_cut_off_in_its_arguments_is_told_so(mini_repo):
+    half = {"id": "c1", "type": "function", "function": {"name": "submit_review", "arguments": ""}}
+    half["function"]["arguments"] = json.dumps(GOOD_REVIEW)[:-40]
+    cut = _completion({"content": "", "tool_calls": [half]})
+    cut["usage"]["completion_tokens"] = 8000  # the whole limit, though the answer says it ended for the tool call
+    script = ScriptedOpenRouter(
+        [cut, _completion({"content": "", "tool_calls": [_tool_call("c2", "submit_review", GOOD_REVIEW)]})]
+    )
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and len(script.requests) == 2
+    (answer,) = [m for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert "reached the output limit before its arguments were complete" in answer["content"]
+    assert "`submit_review`" in answer["content"] and "not valid JSON" not in answer["content"]
+
+    # Cut off before the first argument, what is left can be an empty object, and cut off later, an object
+    # with the fields that were complete. Neither is a submission to reject for what it lacks: more of them
+    # than a run has rejections do not end it, and none is told which fields are missing.
+    def at_limit(args: dict) -> dict:
+        reply = _completion({"content": "", "tool_calls": [_tool_call("e", "submit_review", args)]})
+        reply["usage"]["completion_tokens"] = 8000
+        return reply
+
+    good = _completion({"content": "", "tool_calls": [_tool_call("c2", "submit_review", GOOD_REVIEW)]})
+    script = ScriptedOpenRouter([at_limit({}), at_limit({"summary": "s"}), at_limit({}), good])
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None and run.errors == [] and len(script.requests) == 4
+    answers = [m["content"] for m in script.requests[3]["messages"] if m["role"] == "tool"]
+    assert len(answers) == 3 and all("reached the output limit" in a for a in answers)
+    assert not any("rejected" in a or "verdict must be" in a for a in answers)
+    # The same submissions in answers with room left are rejected for what they lack, and counted.
+    plain = _completion({"content": "", "tool_calls": [_tool_call("e", "submit_review", {})]})
+    script = ScriptedOpenRouter([plain, plain, plain, good])
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is None and len(script.requests) == 3 and "summary is required" in run.errors
+    # An answer that ends at the limit for a reason of its own is not one that was cut off.
+    filtered = at_limit({})
+    filtered["choices"][0]["finish_reason"] = "content_filter"
+    script = ScriptedOpenRouter([filtered, good])
+    run, _, _ = await _run(mini_repo, script)
+    (answer,) = [m["content"] for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert run.review is not None and "rejected" in answer and "output limit" not in answer
+
+    # The same broken arguments in an answer that had room left are the model's own mistake, as before.
+    short = _completion({"content": "", "tool_calls": [half]})
+    script = ScriptedOpenRouter(
+        [short, _completion({"content": "", "tool_calls": [_tool_call("c2", "submit_review", GOOD_REVIEW)]})]
+    )
+    run, _, _ = await _run(mini_repo, script)
+    (answer,) = [m for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert run.review is not None and "not valid JSON" in answer["content"] and "output limit" not in answer["content"]
+
+
+async def test_only_the_last_call_of_an_answer_is_the_one_cut_off(mini_repo):
+    # A complete submission with a mistake in it, then a lookup that the output limit cut off: the submission
+    # is told its mistake, as in any answer, and only the lookup is told that it was cut off.
+    half = {"id": "c2", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "drivers/i2c'}}
+    both = _completion({"content": "", "tool_calls": [_tool_call("c1", "submit_review", {"summary": "s"}), half]})
+    both["usage"]["completion_tokens"] = 8000
+    both["choices"][0]["finish_reason"] = "length"
+    good = _completion({"content": "", "tool_calls": [_tool_call("c3", "submit_review", GOOD_REVIEW)]})
+    script = ScriptedOpenRouter([both, good])
+    run, _, _ = await _run(mini_repo, script)
+    assert run.review is not None
+    first, second = [m["content"] for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert "rejected" in first and "verdict must be one of" in first and "output limit" not in first
+    assert "`read_file` reached the output limit" in second
+
+
+async def test_a_run_whose_submissions_were_all_cut_off_says_so(mini_repo):
+    def cut_off():
+        half = {"id": "c", "type": "function", "function": {"name": "submit_review", "arguments": ""}}
+        half["function"]["arguments"] = json.dumps(GOOD_REVIEW)[:-40]
+        reply = _completion({"content": "", "tool_calls": [half]})
+        reply["usage"]["completion_tokens"] = 8000
+        return reply
+
+    script = ScriptedOpenRouter([cut_off() for _ in range(8)])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)
+    assert run.review is None and len(script.requests) == 4  # the one step and its three forced turns
+    assert run.errors == [
+        "4 call(s) of submit_review were cut off at the output limit and none got through within 1 steps (+3 forced)"
+    ]
+
+
+async def test_a_lookup_cut_off_when_the_run_is_asked_to_submit_is_not_asked_for_again(mini_repo):
+    half = {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "drivers/i2c'}}
+    cut = _completion({"content": "", "tool_calls": [half]})
+    cut["usage"]["completion_tokens"] = 8000
+    good = _completion({"content": "", "tool_calls": [_tool_call("c2", "submit_review", GOOD_REVIEW)]})
+    script = ScriptedOpenRouter([cut, good])
+    run, _, _ = await _run(mini_repo, script, max_steps=1)  # the first turn is already the last: forced
+    assert run.review is not None and run.forced
+    (answer,) = [m["content"] for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert answer.startswith("Not run: the budget is exhausted.") and "`submit_review`" in answer
+    assert "Call it again" not in answer and "not valid JSON" not in answer
+    # With turns left, the same cut-off lookup is asked for again.
+    script = ScriptedOpenRouter([cut, good])
+    run, _, _ = await _run(mini_repo, script)
+    (answer,) = [m["content"] for m in script.requests[1]["messages"] if m["role"] == "tool"]
+    assert run.review is not None and "`read_file` reached the output limit" in answer and "Call it again" in answer
+
+
 async def test_agent_gives_up_after_repeated_rejections(mini_repo):
     bad = _completion({"content": "", "tool_calls": [_tool_call("c", "submit_review", {"summary": "x"})]})
     script = ScriptedOpenRouter([bad, bad, bad, bad])

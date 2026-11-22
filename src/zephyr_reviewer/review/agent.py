@@ -14,7 +14,7 @@ from typing import Any
 
 from .mcp_client import ToolBridge
 from .openrouter import ContextLengthError, OpenRouter, OpenRouterError, Usage, assistant_message_for_history
-from .prompts import budget_exhausted, cut_off, nudge, rejection_message
+from .prompts import budget_exhausted, cut_off, cut_off_call, nudge, rejection_message
 from .schema import SUBMIT_REVIEW_TOOL, SUBMIT_TOOL_NAME, Review, parse_review
 from .text import without_surrogates
 
@@ -154,6 +154,7 @@ async def run_agent(
     forced = False
     nudges = 0
     rejections = 0
+    cut_off_submissions = 0  # calls of the terminal tool that the output limit cut off
     last_prompt_tokens = 0
     errors: list[str] = []
     tool_results: list[dict[str, Any]] = []
@@ -369,8 +370,11 @@ async def run_agent(
 
         # Parse every call first so a submission is judged before any lookups run; then run the lookups
         # concurrently (models often ask for several files at once) and answer them in the model's order.
-        parsed: list[tuple[dict[str, Any], str, dict[str, Any] | None, str]] = []
-        for tc in result.tool_calls:
+        parsed: list[tuple[dict[str, Any], str, dict[str, Any] | None, str, bool]] = []
+        # Only the last call of an answer can be the one that its output limit cut off.
+        at_limit = _at_output_limit(result, llm)
+        for n, tc in enumerate(result.tool_calls):
+            cut = at_limit and n == len(result.tool_calls) - 1
             fn = tc.get("function") or {}
             name = fn.get("name", "")
             raw_args = fn.get("arguments") or "{}"
@@ -379,11 +383,20 @@ async def run_agent(
                 content = ""
             except json.JSONDecodeError as exc:
                 args = None
-                content = f"ERROR: arguments were not valid JSON ({exc}). Call the tool again with a JSON object."
-            parsed.append((tc, name, args, content))
+                if not cut:
+                    content = f"ERROR: arguments were not valid JSON ({exc}). Call the tool again with a JSON object."
+                elif forced and name != terminal.name:
+                    # A lookup is not run once the run is asked to submit, so this one is not asked for again.
+                    content = f"Not run: the budget is exhausted. {budget_exhausted(terminal.name)}"
+                else:
+                    # Not a model that cannot write JSON: the answer ended in the middle of it. Told that its
+                    # JSON was invalid, a model sends the same arguments again wrapped up as text.
+                    content = cut_off_call(name)
+                    cut_off_submissions += int(name == terminal.name)
+            parsed.append((tc, name, args, content, cut))
 
         answers: dict[int, str] = {}
-        for i, (_tc, name, args, content) in enumerate(parsed):
+        for i, (_tc, name, args, content, cut) in enumerate(parsed):
             if args is None:
                 answers[i] = content
             elif name == terminal.name:
@@ -394,6 +407,15 @@ async def run_agent(
                 if output is not None and not errs:
                     detail(f"{tag}[step {step}] {terminal.describe(output)}")
                     return done(output, step)
+                if cut:
+                    # A submission cut off at the output limit can arrive as valid JSON: as an empty object,
+                    # or with the fields it got to and the rest missing. What it lacks was never written, so
+                    # it is answered as the cut-off call it is, and is not one of the rejections a run may
+                    # have. The step budget still ends a run that keeps doing it.
+                    detail(f"{tag}[step {step}] submission cut off at the output limit: {errs}")
+                    cut_off_submissions += 1
+                    answers[i] = cut_off_call(name)
+                    continue
                 rejections += 1
                 detail(f"{tag}[step {step}] submission rejected: {errs}")
                 if rejections > max_rejections:
@@ -414,10 +436,19 @@ async def run_agent(
         pending = [i for i in range(len(parsed)) if i not in answers]
         results = await asyncio.gather(*(lookup(step, parsed[i][1], parsed[i][2] or {}) for i in pending))
         answers.update(zip(pending, results, strict=True))
-        for i, (tc, name, _args, _content) in enumerate(parsed):
+        for i, (tc, name, _args, _content, _cut) in enumerate(parsed):
             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""), "name": name, "content": answers[i]})
 
-    errors.append(f"model did not call {terminal.name} within {max_steps} steps (+{GRACE_STEPS} forced)")
+    budget = f"within {max_steps} steps (+{GRACE_STEPS} forced)"
+    if cut_off_submissions:
+        # It did call it: say what became of the calls, or the error sends a reader looking for a model
+        # that would not submit.
+        errors.append(
+            f"{cut_off_submissions} call(s) of {terminal.name} were cut off at the output limit and "
+            f"none got through {budget}"
+        )
+    else:
+        errors.append(f"model did not call {terminal.name} {budget}")
     return done(None, max_steps + GRACE_STEPS)
 
 
@@ -441,6 +472,19 @@ def _refuses_reasoning(exc: Exception) -> bool:
         return False
     text = str(exc).lower()
     return "reasoning" in text or "effort" in text
+
+
+def _at_output_limit(result, llm) -> bool:
+    """An answer that ended at its output limit. The reason it gives for ending does not always say so: a
+    tool call cut off in the middle of its arguments has been seen to end with "tool_calls", so having used
+    the whole limit says it too, unless the answer names another cause. An answer that was complete at
+    exactly the limit is taken for one that was cut off; that matters only if its tool call is unusable."""
+    if result.finish_reason == "length":
+        return True
+    if result.finish_reason in ("content_filter", "error"):
+        return False
+    limit = int(getattr(llm, "max_tokens", 0) or 0)
+    return limit > 0 and int((result.usage or {}).get("completion_tokens") or 0) >= limit
 
 
 def _cut_off(result, llm) -> bool:
