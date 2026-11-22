@@ -14,7 +14,7 @@ from tests.test_agent import GOOD_REVIEW, _completion, _tool_call
 from zephyr_reviewer import cli
 from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.mcp_server import _only_broken_pipes, build_server
-from zephyr_reviewer.review.agent import ELIDED, compact_history, run_review
+from zephyr_reviewer.review.agent import ELIDED, ELIDED_FOR_GOOD, compact_history, run_review
 from zephyr_reviewer.review.mcp_client import ToolBridge
 from zephyr_reviewer.review.openrouter import ContextLengthError, OpenRouter, OpenRouterError
 
@@ -155,7 +155,8 @@ async def test_agent_forces_submission_when_compaction_is_not_enough(mini_repo):
         )
     assert run.review is not None and run.forced
     assert seen[3]["tool_choice"] == {"type": "function", "function": {"name": "submit_review"}}
-    assert all(m["content"] == ELIDED for m in seen[3]["messages"] if m["role"] == "tool")
+    # Everything is elided and the model is asked to submit: the note no longer invites it to call a tool again.
+    assert all(m["content"] == ELIDED_FOR_GOOD for m in seen[3]["messages"] if m["role"] == "tool")
     assert [t["elided"] for t in run.transcript if t.get("kind") == "compaction"] == [2, 4]
 
 
