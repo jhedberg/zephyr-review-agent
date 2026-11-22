@@ -1126,6 +1126,11 @@ async def run_pipeline(
                                 "as": fid,
                                 "note": "undecided; kept as speculative",
                             }
+                    else:
+                        # A case about dismissals alone has no concern to keep. The dismissals stand as the
+                        # passes made them, and the record says that nobody checked them.
+                        for s in h.source_ids:
+                            fates[s] = {"fate": "undecided", "by": label, "note": "undecided; the dismissal stands"}
                 records.append(_stage_record(label, res, {"verdict": "undecided"}))
                 continue
             # One verdict per case: a single case answers with submit_hard_case_verdict, a batch with an
