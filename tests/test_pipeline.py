@@ -850,6 +850,26 @@ async def test_pipeline_verifies_external_claims_and_reports_a_verdict_for_each(
     assert "External claims checked: 1 confirmed, 1 refuted, 0 undecided" in rreq["messages"][1]["content"]
 
 
+def test_a_hard_case_verdict_is_taken_as_it_was_validated():
+    from zephyr_reviewer.review.pipeline import _parse_hard_case, make_hard_cases_parser
+
+    # Any capitalisation is accepted, so what comes out is the spelling the pipeline compares with: a
+    # "Confirmed" passed on as it came would be read as a refutation and the finding dropped.
+    confirmed = {"verdict": "Confirmed", "reason": "the symbol has no definition", "finding": _finding("undefined")}
+    out, errs = _parse_hard_case(confirmed)
+    assert errs == [] and out["verdict"] == "confirmed" and out["finding"]["title"] == "undefined"
+    out, errs = _parse_hard_case({"verdict": "REFUTED", "reason": "defined in Kconfig.foo"})
+    assert errs == [] and out["verdict"] == "refuted"
+    out, errs = make_hard_cases_parser(["H1", "H2"])(
+        {"verdicts": [{**confirmed, "case": "H1"}, {"case": "H2", "verdict": "Refuted", "reason": "defined"}]}
+    )
+    assert errs == [] and [(v["case"], v["verdict"]) for v in out["verdicts"]] == [
+        ("H1", "confirmed"),
+        ("H2", "refuted"),
+    ]
+    assert _parse_hard_case({"verdict": "maybe", "reason": "r"}) == (None, ["verdict must be confirmed or refuted"])
+
+
 def test_batched_hard_cases_need_one_verdict_each():
     from zephyr_reviewer.review.pipeline import make_hard_cases_parser
 

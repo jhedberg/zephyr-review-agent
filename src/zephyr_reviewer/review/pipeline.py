@@ -539,7 +539,8 @@ def _parse_hard_case(args: dict[str, Any]) -> tuple[dict[str, Any] | None, list[
             return None, ["a confirmed verdict needs a complete finding (title, problem, trigger, impact, ...)"]
     if not str(args.get("reason") or "").strip():
         return None, ["reason is required"]
-    return args, []
+    # The verdict as it was validated: what reads it compares it with "confirmed", and "Confirmed" passed above.
+    return {**args, "verdict": verdict}, []
 
 
 def _parse_report(args: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
