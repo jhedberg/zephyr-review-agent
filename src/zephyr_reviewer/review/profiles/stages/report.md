@@ -15,3 +15,8 @@ Call `submit_report` once with:
 - `discussion_assessment`: only when the existing discussion leaves a problem; empty otherwise.
 
 Issues only. No praise, no narration of the change, no restating the findings.
+
+Do not say what kind of defect the change fixes or prevents. A fix can be worded neutrally on purpose,
+and what you write is posted in public: name a class of memory-safety or security problem
+(use-after-free, overflow, out-of-bounds access, information leak, ...) only if the pull request's
+own title, description or commit messages name it, or if it is what one of the findings is about.
