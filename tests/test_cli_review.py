@@ -292,6 +292,34 @@ def test_review_command_multi_stage_pipeline(mini_repo, stub_openrouter, tmp_pat
     assert "Lock leak on the error path." in printed and "1 finding(s) are posted as inline comments" in printed
 
 
+def test_a_review_posts_no_class_of_defect_that_the_change_does_not_name(
+    mini_repo,
+    stub_openrouter,
+    tmp_path,
+    monkeypatch,
+    capsys,  # noqa: F811
+):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    monkeypatch.setitem(
+        GOOD_REVIEW, "summary", "The change closes a use-after-free in the transfer path. The lock is leaked on error."
+    )
+    out_dir = tmp_path / "out"
+    argv = ["review", "--repo", str(mini_repo["root"]), "--base", mini_repo["base"], "--head", mini_repo["head"]]
+    assert cli.main([*argv, "--dry-run", "--in-process", "--output-dir", str(out_dir)]) == 0
+    assert len(_Stub.turns) == 2
+    captured = capsys.readouterr()
+    assert "The lock is leaked on error." in captured.out and "use-after-free" not in captured.out
+    assert (
+        "use-after-free" not in captured.err
+        and "1 sentence(s) of the summary or the assessments withheld" in captured.err
+    )
+    saved = json.loads((out_dir / "review.json").read_text())["review"]
+    assert saved["summary"] == "The lock is leaked on error."
+    assert "use-after-free" not in (out_dir / "comment.md").read_text()
+
+
 def test_review_command_draft_ensemble_runs_specialists_on_every_model(
     mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys
 ):

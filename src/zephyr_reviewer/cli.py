@@ -23,6 +23,7 @@ from .review import testplan
 from .review.agent import LocalTool, run_review
 from .review.ci import CI_FAILURE_LOGS_TOOL, CI_STATUS_TOOL, CIResults
 from .review.config import ReviewConfig
+from .review.disclosure import keep_assessment_neutral, stated_text
 from .review.discussion import PR_DISCUSSION_TOOL, Discussion, trust_level
 from .review.external import Claim, claims_digest, parse_claims, reconcile
 from .review.followup import (
@@ -904,6 +905,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         log(f"test plan: {len(run.review.test_plan)} entries, {flagged} flagged by validation")
     if run.review is not None:
         review = run.review
+        keep_assessment_neutral(review, stated_text(pr.title, pr.body, intel.commits), log)
 
         def render(exclude_inline: bool) -> str:
             return render_comment(
