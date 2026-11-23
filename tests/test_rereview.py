@@ -76,11 +76,81 @@ def test_delta_is_the_hunks_the_earlier_review_did_not_see():
     assert "+\tif (ret < 0) {" in d.diff_text and "+b" in d.diff_text
     assert "xfer()" not in d.diff_text and "select BAR" not in d.diff_text  # reviewed before
     assert "diff --git a/drivers/foo.c" in d.diff_text and "@@ -140,3 +140,4 @@" in d.diff_text
-    assert (d.lines, d.total_lines) == (5, 7) and round(d.share, 2) == 0.71
+    # The reworked hunk is read whole, and counts for the three lines that are new in it.
+    assert (d.lines, d.total_lines) == (4, 7) and round(d.share, 2) == 0.57
+    assert d.new_lines == {"drivers/foo.c": ["+\tif (ret < 0) {", "+\t\treturn ret;", "+\t}"]}
+    # A record made before lines were kept can only say that the hunk is new: all of it counts.
+    old_record = {k: v for k, v in _earlier().items() if k != "lines"}
+    d = delta_since(old_record, now, MSG)
+    assert (d.lines, d.total_lines) == (5, 7) and round(d.share, 2) == 0.71 and d.new_lines == {}
 
     same = delta_since(describe_change(now, MSG), now, [Commit(subject="drivers: foo: add xfer", body="Reworded.")])
     assert same.files == [] and same.messages_changed and not same.empty and same.share == 0.0
     assert delta_since(describe_change(now, MSG), now, MSG).empty
+
+
+def test_one_fixed_line_in_a_large_hunk_is_one_new_line():
+    # An added test file is one hunk. A review comment is answered by changing one line of it.
+    body = [f"+\tzassert_equal(run({i}), 0);" for i in range(300)]
+    other = _file("drivers/foo.c", (10, LOCK))
+
+    def tests(lines: list[str]) -> str:
+        return (
+            "\n".join(
+                ["diff --git a/tests/t.c b/tests/t.c", "new file mode 100644", "--- /dev/null", "+++ b/tests/t.c"]
+                + ["@@ -0,0 +1,300 @@", *lines]
+            )
+            + "\n"
+        )
+
+    earlier = describe_change(other + tests(body), MSG)
+    fixed = list(body)
+    fixed[150] = "+\tzassert_equal(run((uint8_t)150), 0);"
+    d = delta_since(earlier, other + tests(fixed), MSG)
+    assert d.files == ["tests/t.c"] and d.unchanged == ["drivers/foo.c"]
+    assert (d.lines, d.total_lines) == (1, 301) and d.share < 0.01 < cli.DELTA_MAX_SHARE
+    assert d.new_lines == {"tests/t.c": ["+\tzassert_equal(run((uint8_t)150), 0);"]}
+    assert d.diff_text.count("zassert_equal") == 300  # the hunk is still there to read, whole
+    # Without the lines in the earlier record this is the whole file again, and a full review.
+    whole = delta_since({k: v for k, v in earlier.items() if k != "lines"}, other + tests(fixed), MSG)
+    assert (whole.lines, whole.total_lines) == (300, 301) and whole.share > cli.DELTA_MAX_SHARE
+
+    # A line counts as reviewed as often as the file's patch held it: a second copy of one is new.
+    twice = list(body)
+    twice.insert(10, body[10])
+    d = delta_since(earlier, other + tests(twice), MSG)
+    assert d.lines == 1 and d.new_lines == {"tests/t.c": [body[10]]}
+    # Lines taken out leave nothing new to read in the hunk they were in.
+    d = delta_since(earlier, other + tests(body[:290]), MSG)
+    assert d.files == ["tests/t.c"] and d.lines == 0 and d.new_lines == {"tests/t.c": []} and not d.rearranged
+    # A line that another hunk of the file still holds is not free for a new hunk to repeat.
+    two = _file("drivers/foo.c", (10, LOCK), (40, INIT))
+    again = _file("drivers/foo.c", (10, LOCK), (40, [" \tint ret;", "+\tret = xfer();", " \treturn ret;"]))
+    d = delta_since(describe_change(two, MSG), again, MSG)
+    assert d.lines == 1 and "drivers/foo.c" not in d.new_lines  # every line of the new hunk is new
+
+    # The models are told which lines of a hunk that was partly reviewed are the new ones.
+    d = delta_since(earlier, other + tests(fixed), MSG)
+    text = scope_section(d, "a" * 40)
+    assert "Some of the hunks above were reviewed before in part." in text
+    assert "- `tests/t.c`:\n```diff\n+\tzassert_equal(run((uint8_t)150), 0);\n```" in text
+    gone = scope_section(delta_since(earlier, other + tests(body[:290]), MSG), "a" * 40)
+    assert "- `tests/t.c`: no new line; lines were removed from what was reviewed, and those that are" in gone
+    assert "another order or place" not in gone
+
+    # Two lines that changed places are both lines the earlier patch held: nothing is new, nothing is gone,
+    # and the order is the change. The models are told to read the hunk again, not that there is nothing new.
+    swapped = list(body)
+    swapped[20], swapped[21] = swapped[21], swapped[20]
+    d = delta_since(earlier, other + tests(swapped), MSG)
+    assert d.files == ["tests/t.c"] and d.lines == 0 and d.share < cli.DELTA_MAX_SHARE  # still narrowed
+    assert d.new_lines == {"tests/t.c": []} and d.rearranged == ["tests/t.c"]
+    moved = scope_section(d, "a" * 40)
+    assert "- `tests/t.c`: no line is new and none is gone, so its lines are in another order or place" in moved
+    assert "That order is the change: read its hunks above again." in moved and "no new line;" not in moved
+    assert "so a line that moved is not listed" in moved
+    assert not delta_since(earlier, other + tests(fixed), MSG).rearranged  # one line replaced is not a move
+    assert "reviewed before in part" not in scope_section(whole, "a" * 40)
 
 
 def test_a_removed_hunk_marks_its_file_as_changed_without_anything_to_read():

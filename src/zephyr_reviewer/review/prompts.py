@@ -154,6 +154,9 @@ def system_prompt(profile_text: str, language: str, *, include_guides: bool = Tr
     return text
 
 
+SCOPE_NEW_LINES = 200  # lines listed as new inside hunks that were partly reviewed before
+
+
 def scope_section(delta: Any, old_head: str, assessments: dict[str, str] | None = None) -> str:
     """The part of the opening that narrows a re-review to what changed since the earlier one."""
     old = old_head[:12]
@@ -172,6 +175,36 @@ def scope_section(delta: Any, old_head: str, assessments: dict[str, str] | None 
     ]
     if delta.diff_text:
         parts += ["```diff", delta.diff_text, "```"]
+    partly = getattr(delta, "new_lines", None) or {}
+    if partly:
+        # A hunk is shown whole, but one changed line makes a hunk new: say which lines the earlier review
+        # did not have, or a hunk that is a whole added file gets reviewed again for one of them.
+        parts.append(
+            "Some of the hunks above were reviewed before in part. In these files only the lines listed are new "
+            "since then; the other lines of their hunks were reviewed and are context like the rest. A line "
+            "counts as reviewed when the file's earlier patch held the same line anywhere, so a line that "
+            "moved is not listed: where the order of the lines matters, read the hunk as it is now:"
+        )
+        rearranged = set(getattr(delta, "rearranged", None) or [])
+        budget = SCOPE_NEW_LINES
+        for path, lines in partly.items():
+            shown = lines[: max(budget, 0)]
+            budget -= len(shown)
+            rest = f" (and {len(lines) - len(shown)} more)" if len(shown) < len(lines) else ""
+            if path in rearranged:
+                parts.append(
+                    f"- `{path}`: no line is new and none is gone, so its lines are in another order or place "
+                    "than they were reviewed in. That order is the change: read its hunks above again."
+                )
+            elif not lines:
+                parts.append(
+                    f"- `{path}`: no new line; lines were removed from what was reviewed, and those that are "
+                    "left may be in another order."
+                )
+            elif shown:
+                parts += [f"- `{path}`{rest}:", "```diff", *shown, "```"]
+            else:
+                parts.append(f"- `{path}`: {len(lines)} new line(s).")
     if delta.files:
         parts.append("Changed since: " + ", ".join(f"`{p}`" for p in delta.files[:60]) + ".")
     if delta.unchanged:

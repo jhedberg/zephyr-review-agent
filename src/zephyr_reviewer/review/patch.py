@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -72,6 +73,11 @@ class FilePatch:
     def digests(self) -> list[str]:
         return [self.header_digest, *(self.hunk_digest(i) for i in range(len(self.hunks)))]
 
+    @property
+    def line_digests(self) -> list[str]:
+        """One digest per added or removed line of the file's patch, in order, repeats kept."""
+        return [_line_digest(ln) for h in self.hunks for ln in h if _is_changed(ln)]
+
 
 def split_patch(diff_text: str) -> list[FilePatch]:
     """The diff as files and hunks, text kept verbatim."""
@@ -100,11 +106,23 @@ def describe_change(diff_text: str, commits: Iterable[Any] = ()) -> dict[str, An
         "digest": patch_digest(diff_text, commits),
         "messages": messages_digest(commits),
         "files": {f.path: f.digests for f in split_patch(diff_text)},
+        # A hunk is new as soon as one of its lines is, and a hunk can be a whole added file: the lines say
+        # how much of a new hunk the earlier review had in front of it.
+        "lines": {f.path: f.line_digests for f in split_patch(diff_text)},
     }
 
 
+def _is_changed(line: str) -> bool:
+    return line[:1] in "+-" and not line.startswith(("+++", "---"))
+
+
+def _line_digest(line: str) -> str:
+    """An added or removed line, sign included; short, since a record keeps one per changed line."""
+    return hashlib.sha256(line.encode("utf-8", "replace")).hexdigest()[:8]
+
+
 def _changed_lines(lines: Iterable[str]) -> int:
-    return sum(1 for ln in lines if ln[:1] in "+-" and not ln.startswith(("+++", "---")))
+    return sum(1 for ln in lines if _is_changed(ln))
 
 
 @dataclass
@@ -115,9 +133,13 @@ class Delta:
     unchanged: list[str] = field(default_factory=list)  # files whose patch is the one reviewed earlier
     dropped: list[str] = field(default_factory=list)  # files the change no longer touches
     diff_text: str = ""  # the new hunks only, under their file headers
-    lines: int = 0  # added and removed lines in the new hunks
+    lines: int = 0  # added and removed lines the earlier review did not see
     total_lines: int = 0  # added and removed lines in the whole change
     messages_changed: bool = False
+    # Per file whose new hunks were partly reviewed before: the lines in them that were not.
+    new_lines: dict[str, list[str]] = field(default_factory=dict)
+    # Of those, the files in which no line is new and none is gone: the same lines in another order or place.
+    rearranged: list[str] = field(default_factory=list)
 
     @property
     def share(self) -> float:
@@ -132,8 +154,14 @@ def delta_since(earlier: dict[str, Any], diff_text: str, commits: Iterable[Any] 
     """Compare the change now with ``earlier`` (a record's ``describe_change``): which hunks are new.
 
     A hunk counts as reviewed when its text, context included, was part of the same file's patch then;
-    where it sits in the file does not matter. A file whose header changed (renamed, mode) is new."""
+    where it sits in the file does not matter. A file whose header changed (renamed, mode) is new.
+
+    A new hunk is read whole, but it counts for as many lines as are new in it: a line that the same file's
+    patch held then, as often as it held it, was reviewed. One fixed line in an added file of 400 lines is
+    one new line, not 400. A record made before lines were kept counts every line of a new hunk."""
     was: dict[str, list[str]] = {str(k): list(v) for k, v in (earlier.get("files") or {}).items()}
+    kept = earlier.get("lines")
+    was_lines: dict[str, list[str]] = {str(k): list(v) for k, v in kept.items()} if isinstance(kept, dict) else {}
     d = Delta(messages_changed=str(earlier.get("messages") or "") != messages_digest(commits))
     out: list[str] = []
     seen: set[str] = set()
@@ -153,7 +181,34 @@ def delta_since(earlier: dict[str, Any], diff_text: str, commits: Iterable[Any] 
             out += f.header
             for h in fresh:
                 out += h
-                d.lines += _changed_lines(h)
+            changed = [ln for h in fresh for ln in h if _is_changed(ln)]
+            if new_header or f.path not in was_lines:
+                d.lines += len(changed)
+                continue
+            # What the hunks reviewed before still hold was seen there; what is left of the earlier lines
+            # is what the new hunks may repeat.
+            left = Counter(was_lines[f.path])
+            left.subtract(
+                _line_digest(ln)
+                for i, h in enumerate(f.hunks)
+                if f.hunk_digest(i) in old
+                for ln in h
+                if _is_changed(ln)
+            )
+            new = []
+            for ln in changed:
+                digest = _line_digest(ln)
+                if left[digest] > 0:
+                    left[digest] -= 1
+                else:
+                    new.append(ln)
+            d.lines += len(new)
+            if len(new) < len(changed):
+                d.new_lines[f.path] = new
+            # The lines are matched as a set with counts, not in order: two statements that changed places
+            # are all lines the earlier patch held, and their order is the change.
+            if not new and not any(n > 0 for n in left.values()):
+                d.rearranged.append(f.path)
     d.dropped = [p for p in was if p not in seen]
     d.diff_text = "\n".join(out)
     return d
