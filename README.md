@@ -160,7 +160,10 @@ nothing from the tree is executed. That is what makes it safe to run on a fork's
    could not be anchored. A re-run skips inline comments it already posted for the same finding at
    the same location, so threads stay single. If GitHub rejects the inline review, the findings
    are folded back into the top-level comment. `post_inline_comments: "false"` puts everything in
-   the top-level comment. `review-output/` receives `comment.md`, `inline_comments.json`,
+   the top-level comment. Suggested code is a suggestion block, committed at a click, when it can
+   stand in for the lines it is anchored to and the finding is not speculative;
+   `suggestion_categories` limits that to the categories it lists and shows other suggested code
+   as a plain code block. `review-output/` receives `comment.md`, `inline_comments.json`,
    `review.json` and `transcript.jsonl`.
 
 ### Test plan (option)

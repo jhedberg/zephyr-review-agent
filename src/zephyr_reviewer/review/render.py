@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from .agent import RunResult
@@ -361,7 +362,21 @@ def replaces_anchor(code: str, path: str = "") -> bool:
     return _lang(path) in _ELLIPSIS_IS_CODE or not _ELIDED_LINE.search(code)
 
 
-def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[str, Any]]:
+def applies_with_one_click(f: Finding, categories: Iterable[str] = ()) -> bool:
+    """Whether a finding's suggested code is posted as a suggestion block, which GitHub commits at a click.
+    Nothing in a review checks the suggested code: a hard case settles whether the problem is real, not
+    whether the fix is right for the code around it. So the block is for a fix that stands in for the lines
+    it is anchored to, of a finding that was decided, and, where ``categories`` is given, of a kind whose fix
+    is mechanical. Other suggested code is shown as code to read."""
+    if f.speculative or not replaces_anchor(f.suggested_code, f.file):
+        return False
+    allowed = set(categories)
+    return not allowed or f.category in allowed
+
+
+def inline_comments(
+    review: Review, tag: str = "zephyr-reviewer", suggestion_categories: Iterable[str] = ()
+) -> list[dict[str, Any]]:
     """One review comment per anchored finding, self-contained and short, carrying a hidden marker for dedup."""
     comments = []
     for f in review.findings:
@@ -372,7 +387,7 @@ def inline_comments(review: Review, tag: str = "zephyr-reviewer") -> list[dict[s
         if f.recommendation:
             body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
         if f.suggested_code.strip():
-            fence = "suggestion" if replaces_anchor(f.suggested_code, f.file) else _lang(f.file)
+            fence = "suggestion" if applies_with_one_click(f, suggestion_categories) else _lang(f.file)
             body += ["", f"```{fence}", f.suggested_code.rstrip(), "```"]
         body += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
         c: dict[str, Any] = {"path": f.file, "line": f.end_line or f.line, "side": "RIGHT", "body": "\n".join(body)}

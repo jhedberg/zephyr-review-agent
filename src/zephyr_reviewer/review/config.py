@@ -87,6 +87,8 @@ class ReviewConfig:
     github_api_url: str = "https://api.github.com"
     post_comment: bool = True
     post_inline: bool = True
+    # Categories whose suggested code is posted as a suggestion block (applied at a click); empty: all of them.
+    suggestion_categories: list[str] = field(default_factory=list)
     comment_tag: str = "zephyr-reviewer"
     quiet: bool = False  # log the major steps only, not every model and tool call
     show_run_details: bool = False  # models, tokens, cost and time in the local log only
@@ -164,6 +166,12 @@ class ReviewConfig:
         cfg.github_api_url = os.environ.get("GITHUB_API_URL", cfg.github_api_url)
         cfg.post_comment = _bool(_env("post_comment"), True)
         cfg.post_inline = _bool(_env("post_inline_comments"), True)
+        cfg.suggestion_categories = [c.lower() for c in _list(_env("suggestion_categories"))]
+        from .schema import CATEGORIES  # here, not at the top: schema is not needed to load a configuration
+
+        unknown = [c for c in cfg.suggestion_categories if c not in CATEGORIES]
+        if unknown:
+            raise ValueError(f"suggestion_categories: unknown {', '.join(unknown)}; known: {', '.join(CATEGORIES)}")
         cfg.comment_tag = _env("comment_tag", cfg.comment_tag)
         cfg.quiet = _bool(_env("quiet"), False)
         cfg.show_run_details = _bool(_env("show_run_details"), False)
