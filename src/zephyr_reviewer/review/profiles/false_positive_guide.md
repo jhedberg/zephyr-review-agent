@@ -36,6 +36,12 @@ unreachable": reachability is hard to establish from a diff, and a wrong call bu
 3. **Kconfig-guarded code.** Code under `#if`, `#ifdef`, `IS_ENABLED()`, `COND_CODE_1()` or
    `CONFIG_*` default values does not exist in other configurations. State the configuration in
    which the problem exists, and check with `kconfig_symbol` that the combination is possible.
+   A call under `if (IS_ENABLED(CONFIG_FOO))` to a function that is declared unconditionally and
+   built only with `CONFIG_FOO` is how the project asks for conditional code to be written (coding
+   guideline Rule A.1). The condition is a constant, and the compiler emits nothing for a branch
+   that is never taken, at `-O0` (`CONFIG_NO_OPTIMIZATIONS`) as at any other level, so there is no
+   undefined reference at link time. Do not report it, and do not recommend a stub or an `#if`
+   around the call.
 4. **Devicetree.** A property the binding marks `required: true` is present; a `DT_INST_*` access
    to a missing property fails at build time, not at run time; `DT_INST_FOREACH_STATUS_OKAY` only
    instantiates enabled nodes. Read the binding with `dt_binding` before claiming a missing or
