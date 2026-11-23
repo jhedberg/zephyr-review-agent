@@ -70,6 +70,24 @@ def test_inline_comment_shape():
     assert "read_file" not in joined and "internal" not in joined and "Problem" not in joined
 
 
+def test_suggested_code_is_applied_at_a_click_only_where_that_is_safe_to_offer():
+    def fence(categories=(), **kw) -> str:
+        finding = _f(suggested_code="\tk_sem_give(&l);", **kw)
+        body = inline_comments(Review("s", "comment", "high", [finding]), "t", categories)[0]["body"]
+        assert "\tk_sem_give(&l);\n```" in body  # the code is always there to read
+        return "suggestion" if "```suggestion\n" in body else "c" if "```c\n" in body else "?"
+
+    # As before without a list: any category, unless the finding was not decided.
+    assert fence() == "suggestion" and fence(category="coding_guidelines") == "suggestion"
+    # A finding that no hard case settled is a question, and a question does not come with a patch to commit.
+    assert fence(speculative=True) == "c" and fence(("bug",), speculative=True) == "c"
+    # With a list, only its categories get the block.
+    mechanical = ("coding_guidelines", "documentation")
+    assert fence(mechanical) == "c" and fence(mechanical, category="concurrency") == "c"
+    assert fence(mechanical, category="coding_guidelines") == "suggestion"
+    assert fence(mechanical, category="documentation") == "suggestion"
+
+
 def test_code_with_an_elided_part_is_shown_not_offered_as_a_suggestion():
     def body(code: str, file: str = "a.c") -> str:
         return inline_comments(Review("s", "comment", "high", [_f(suggested_code=code, file=file)]), "t")[0]["body"]
