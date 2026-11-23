@@ -125,6 +125,12 @@ def _add_review_args(p: argparse.ArgumentParser) -> None:
         help="multi-stage: comma-separated extra draft models; every specialist runs once per model and "
         "verification sees how many agreed",
     )
+    p.add_argument(
+        "--draft-ensemble-min-lines",
+        type=int,
+        help="multi-stage: changed lines (added plus removed) from which the ensemble runs; a smaller change "
+        "is drafted by the first draft model alone (default 0: always)",
+    )
     p.add_argument("--verify-max-steps", type=int, help="Step budget of the verifying model in two-stage mode")
     p.add_argument("--api-key", help="OpenRouter API key (default: $OPENROUTER_API_KEY)")
     p.add_argument("--github-token", help="GitHub token (default: $GITHUB_TOKEN)")
@@ -261,6 +267,8 @@ def _config(args: argparse.Namespace) -> ReviewConfig:
         ]
     if args.draft_ensemble:
         cfg.draft_ensemble = [m.strip() for m in args.draft_ensemble.split(",") if m.strip()]
+    if args.draft_ensemble_min_lines is not None:
+        cfg.draft_ensemble_min_lines = args.draft_ensemble_min_lines
     if args.verify_max_steps is not None:
         cfg.verify_max_steps = args.verify_max_steps
     if args.test_plan:
@@ -561,6 +569,15 @@ async def _run(
                 specialists = planned
                 if ensemble:
                     log(f"draft ensemble not used for a review of what changed: {drafters[0]} only")
+                ensemble = []
+            changed_lines = sum(f.additions + f.deletions for f in intel.files)
+            if ensemble and changed_lines < cfg.draft_ensemble_min_lines:
+                # A second model's passes cost as much on a small change as the first's and add little there:
+                # most of what gets reported on one is raised by both.
+                log(
+                    f"draft ensemble not used for a change of {changed_lines} line(s), below "
+                    f"draft_ensemble_min_lines ({cfg.draft_ensemble_min_lines}): {drafters[0]} only"
+                )
                 ensemble = []
             run = await run_pipeline(
                 cheap_llm,

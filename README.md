@@ -224,6 +224,12 @@ each merged concern tells the verifier how many of the models raised it. Agreeme
 candidate; a concern only one model raised goes to a hard case unless its evidence already proves
 it. Specialist cost scales with the number of models, verification cost only with the concerns they
 disagree on. `review_map.json` records `drafters` and, per concern, `raised_by` (`stage@model`).
+
+`draft_ensemble_min_lines` (or `--draft-ensemble-min-lines N`) keeps the ensemble for changes of at
+least `N` changed lines, added plus removed, and drafts a smaller one with the first draft model
+alone. A second model costs as much on a small change as the first, and most of what is reported
+on a small change is raised by both. The default of 0 always uses the ensemble. A re-review of what
+changed since an earlier review runs on one model in any case.
 Measure it with the benchmark before making it a default: the variance we have seen between runs
 was in verification, not in candidate generation, so an ensemble raises recall but does not by
 itself make two runs agree.

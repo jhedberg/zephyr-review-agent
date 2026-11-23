@@ -88,6 +88,13 @@ inputs:
       verification is told how many models raised each one. Setting it makes `auto` pick multi-stage.
     required: false
     default: ""
+  draft_ensemble_min_lines:
+    description: >-
+      multi-stage: changed lines (added plus removed) from which draft_ensemble is used. A smaller
+      change is drafted by the first draft model alone, which costs about a third less. 0: always
+      use the ensemble.
+    required: false
+    default: "0"
   verify_max_steps:
     description: "Step budget of the verifying model in two-stage mode."
     required: false
@@ -372,6 +379,7 @@ runs:
         INPUT_MAX_HARD_CASES: ${{ inputs.max_hard_cases }}
         INPUT_DRAFT_FALLBACK_MODELS: ${{ inputs.draft_fallback_models }}
         INPUT_DRAFT_ENSEMBLE: ${{ inputs.draft_ensemble }}
+        INPUT_DRAFT_ENSEMBLE_MIN_LINES: ${{ inputs.draft_ensemble_min_lines }}
         INPUT_VERIFY_MAX_STEPS: ${{ inputs.verify_max_steps }}
         INPUT_DOSSIER_CHARS: ${{ inputs.dossier_chars }}
         INPUT_TEMPERATURE: ${{ inputs.temperature }}
