@@ -49,6 +49,9 @@ class ReviewConfig:
     pipeline: str = "auto"  # auto | single | two-stage | multi-stage
     draft_models: list[str] = field(default_factory=list)  # two-stage drafts and multi-stage specialists run here
     draft_ensemble: list[str] = field(default_factory=list)  # multi-stage: more draft models, specialists run on each
+    draft_ensemble_min_lines: int = (
+        0  # changed lines from which the ensemble runs; below, draft_model alone (0: always)
+    )
     verify_max_steps: int = 15
     dossier_chars: int = 40_000
     specialist_max_steps: int = 20
@@ -126,6 +129,7 @@ class ReviewConfig:
         drafts = [_env("draft_model")] + _list(_env("draft_fallback_models"))
         cfg.draft_models = [m for i, m in enumerate(drafts) if m and m not in drafts[:i]]
         cfg.draft_ensemble = [m for m in _list(_env("draft_ensemble")) if m not in cfg.draft_models[:1]]
+        cfg.draft_ensemble_min_lines = int(_env("draft_ensemble_min_lines", str(cfg.draft_ensemble_min_lines)))
         cfg.pipeline = _env("pipeline", "auto").strip().lower() or "auto"
         cfg.specialist_max_steps = int(_env("specialist_max_steps", str(cfg.specialist_max_steps)))
         cfg.hard_case_max_steps = int(_env("hard_case_max_steps", str(cfg.hard_case_max_steps)))

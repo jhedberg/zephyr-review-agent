@@ -13,6 +13,7 @@ import pytest
 
 from tests.test_agent import GOOD_REVIEW
 from zephyr_reviewer import cli
+from zephyr_reviewer.intel import SourceIntel
 from zephyr_reviewer.review.config import ReviewConfig
 
 
@@ -344,6 +345,39 @@ def test_review_command_draft_ensemble_runs_specialists_on_every_model(
     ]
     printed = capsys.readouterr().out
     assert "Lock leak on the error path." in printed
+
+
+def test_a_change_below_draft_ensemble_min_lines_is_drafted_by_one_model(
+    mini_repo, stub_openrouter, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("ZR_BASE_URL", stub_openrouter)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    lines = sum(f.additions + f.deletions for f in intel.files)
+    assert lines > 1
+
+    def drafted_by(min_lines: int) -> tuple[list[str], list[str], str]:
+        _Stub.turns.clear()
+        out_dir = tmp_path / f"out-{min_lines}"
+        argv = ["review", "--repo", str(mini_repo["root"]), "--base", mini_repo["base"], "--head", mini_repo["head"]]
+        argv += ["--dry-run", "--in-process", "--specialists", "intent,logic", "--draft-model", "cheap/model"]
+        argv += ["--draft-ensemble", "second/model", "--draft-ensemble-min-lines", str(min_lines)]
+        assert cli.main([*argv, "--output-dir", str(out_dir)]) == 0
+        passes = [
+            r["model"] for r in _Stub.turns if any(t["function"]["name"] == "submit_concerns" for t in r["tools"])
+        ]
+        drafters = json.loads((out_dir / "review_map.json").read_text())["drafters"]
+        return sorted(passes), drafters, capsys.readouterr().err
+
+    # One line more than the change has: the second model does not run, and the log says why.
+    passes, drafters, log = drafted_by(lines + 1)
+    assert passes == ["cheap/model", "cheap/model"] and drafters == ["cheap/model"]
+    assert f"draft ensemble not used for a change of {lines} line(s), below draft_ensemble_min_lines" in log
+    # At the size of the change, and with no limit, both run.
+    for limit in (lines, 0):
+        passes, drafters, log = drafted_by(limit)
+        assert passes == ["cheap/model", "cheap/model", "second/model", "second/model"]
+        assert drafters == ["cheap/model", "second/model"] and "draft ensemble not used" not in log
 
 
 def test_draft_ensemble_without_a_draft_model_never_runs_specialists_on_the_verifier(
