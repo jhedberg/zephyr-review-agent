@@ -36,6 +36,9 @@ def test_guides_are_operational_and_appended_to_the_single_agent_prompt():
     ):
         assert rule in guides
     assert "Never lower a level because you believe the path is unreachable" in guides
+    # The pattern the project requires for conditional code is not a link error waiting to happen.
+    assert "A call under `if (IS_ENABLED(CONFIG_FOO))` to a function that is declared unconditionally" in guides
+    assert "do not recommend a stub or an `#if`" in guides and "`-O0` (`CONFIG_NO_OPTIMIZATIONS`)" in guides
     with_guides = system_prompt(load_profile("zephyr"), "English")
     assert "# Before you submit" in with_guides and GUIDE_MARK in with_guides and SEVERITY_MARK in with_guides
     assert with_guides.index("# How to work") < with_guides.index("# Before you submit")
