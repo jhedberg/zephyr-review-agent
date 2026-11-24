@@ -467,6 +467,28 @@ def test_openrouter_retries_then_fails_cleanly():
     assert calls["n"] == 2
 
 
+def test_a_parsed_review_with_a_finding_is_not_an_approval_and_not_all_clear():
+    from zephyr_reviewer.review.schema import says_all_clear
+
+    lines = {"drivers/i2c/i2c_foo.c": {17, 18, 19}}
+    review, errors = parse_review({**GOOD_REVIEW, "verdict": "approve", "summary": "No issues found."}, lines)
+    assert not errors and review.findings
+    assert review.verdict == "comment" and review.summary == "Automated review completed; see findings."
+    # A summary that names what is wrong stays, and so does a verdict that is not an approval.
+    review, _ = parse_review({**GOOD_REVIEW, "verdict": "approve"}, lines)
+    assert review.verdict == "comment" and review.summary == GOOD_REVIEW["summary"]
+    review, _ = parse_review(GOOD_REVIEW, lines)
+    assert review.verdict == "request_changes"
+    # Without findings an approval that says all is clear is what it is.
+    review, _ = parse_review(
+        {**GOOD_REVIEW, "verdict": "approve", "summary": "No issues found.", "findings": []}, lines
+    )
+    assert review.verdict == "approve" and review.summary == "No issues found."
+    assert says_all_clear("No defects or regressions identified.") is False  # not one of the known phrasings
+    assert says_all_clear("Looks good.") and says_all_clear("No issues found; however the lock leaks.") is False
+    assert not says_all_clear("") and not says_all_clear("No issues found. " + "x" * 300)
+
+
 def test_parse_review_keeps_only_problems_in_assessments():
     base = {"summary": "ok", "verdict": "approve", "confidence": "high", "findings": []}
     clear = {

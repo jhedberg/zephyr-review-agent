@@ -276,6 +276,17 @@ class Review:
                 return sev
         return "none"
 
+    def agree_with_findings(self) -> None:
+        """Keep the verdict and the summary from saying that there is nothing when there is a finding. An
+        approval is posted as "No findings reported", so with a finding, whatever its severity, it is a
+        comment; and a summary that says all is clear gives way to one that points at the findings."""
+        if not self.findings:
+            return
+        if self.verdict == "approve":
+            self.verdict = "comment"
+        if says_all_clear(self.summary):
+            self.summary = SEE_FINDINGS
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -323,6 +334,15 @@ def _issues_only(text: Any, max_clear_len: int = 240) -> str:
     if len(t) <= max_clear_len and _ALL_CLEAR.search(t) and not _PROBLEM_MARKERS.search(t):
         return ""
     return t
+
+
+SEE_FINDINGS = "Automated review completed; see findings."
+
+
+def says_all_clear(text: str) -> bool:
+    """Whether a short text says that nothing was found and names no problem."""
+    t = (text or "").strip()
+    return bool(t) and len(t) <= 200 and bool(_ALL_CLEAR.search(t)) and not _PROBLEM_MARKERS.search(t)
 
 
 def _norm_enum(value: Any, allowed: list[str], default: str) -> str:
@@ -469,4 +489,5 @@ def parse_review(args: dict[str, Any], changed_lines: dict[str, set[int]]) -> tu
         if isinstance(args.get("external_claims"), list)
         else [],
     )
+    review.agree_with_findings()
     return review, []

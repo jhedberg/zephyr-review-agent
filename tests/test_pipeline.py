@@ -1227,6 +1227,29 @@ async def test_passes_that_return_nothing_are_counted_and_lower_the_confidence(m
     assert "second/model" not in body and "intent" not in body  # a count, no stage and no model
 
 
+class AllClearReportRouter(EnsembleRouter):
+    """The report approves and says that nothing was found, whatever the findings."""
+
+    def handler(self, request):
+        body = json.loads(request.content)
+        if "submit_report" not in {t["function"]["name"] for t in body.get("tools") or []}:
+            return super().handler(request)
+        out = {"summary": "No issues found.", "verdict": "approve", "confidence": "high"}
+        return httpx.Response(200, json=_completion({"content": "", "tool_calls": [_tc("r", "submit_report", out)]}))
+
+
+async def test_a_review_with_a_finding_does_not_say_that_there_is_none(mini_repo):
+    from zephyr_reviewer.review.render import render_comment
+
+    run, pr = await _run_ensemble(AllClearReportRouter(verification_first_attempt_bad=False), mini_repo, [])
+    review = run.review
+    assert review.findings and review.highest_severity() == "low"  # nothing that forces a verdict
+    assert review.verdict == "comment" and review.summary == "Automated review completed; see findings."
+    body = render_comment(review, run, pr, repo="o/r", tag="t")
+    assert "No findings reported" not in body and "No issues found" not in body
+    assert "worth a look, nothing blocking" in body and f"**Findings:** {len(review.findings)}" in body
+
+
 async def test_a_speculative_finding_keeps_the_confidence_from_being_high(mini_repo):
     logs: list[str] = []
     run = await _run_with(StageRouter(verification_first_attempt_bad=False), mini_repo, logs)
