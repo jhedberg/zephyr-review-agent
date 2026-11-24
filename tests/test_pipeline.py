@@ -1417,6 +1417,86 @@ async def test_the_record_of_a_run_without_verification_keeps_what_an_earlier_ru
     assert {fates[c["id"]] for c in others} == {("unverified", "")}
 
 
+class HintedRouter(BatchRouter):
+    """Verification sends every concern and every earlier comment to a hard case of its own, hinted as told."""
+
+    hints: dict[str, str] = {}
+
+    def handler(self, request):
+        body = json.loads(request.content)
+        if "submit_verification" not in {t["function"]["name"] for t in body["tools"]}:
+            return super().handler(request)
+        self.requests.append(body)
+        ids = re.findall(r"^### ([CX]\d+) ", body["messages"][1]["content"], flags=re.M)
+        dids = re.findall(r"^### (D\d+) ", body["messages"][1]["content"], flags=re.M)
+        out = {
+            "findings": [],
+            "dismissed": [{"source_ids": dids, "reason": "all cite code"}] if dids else [],
+            "hard_cases": [
+                {"source_ids": [i], "question": "is it real?", "severity_hint": self.hints.get(i, "low")} for i in ids
+            ],
+        }
+        return httpx.Response(
+            200, json=_completion({"content": "", "tool_calls": [_tc("v", "submit_verification", out)]})
+        )
+
+
+async def test_a_comment_of_an_earlier_review_is_settled_in_a_run_of_its_own_before_other_cases(mini_repo):
+    from zephyr_reviewer.review.pipeline import Concern, HardCase, hard_case_order
+
+    concerns = {"C1": Concern("C1", "logic", {}), "X1": Concern("X1", "external", {})}
+
+    def key(ids: list[str], hint: str) -> tuple[int, int]:
+        return hard_case_order(HardCase("H1", ids, "q", hint), concerns)
+
+    # Critical and high first whatever they are about, then what settles an earlier comment, then the rest.
+    assert key(["C1"], "critical") < key(["X1"], "high") < key(["C1", "X1"], "medium")
+    assert key(["C1", "X1"], "medium") < key(["X1"], "low") < key(["X1"], "suggestion") < key(["C1"], "medium")
+    assert key(["C1"], "medium") < key(["D1"], "low") and key(["X1"], "high") == key(["C1"], "high")
+
+    intel = SourceIntel(str(mini_repo["root"]), mini_repo["head"], mini_repo["base"])
+    pr = PullRequest(0, "t", "", "", "main", mini_repo["base"], "pr", mini_repo["head"], "", False)
+    opening = opening_message(pr, intel.overview(), intel.diff_text, "", repo="o/r")
+    claims = [
+        Claim("X1", "drivers/i2c/i2c_foo.c:30: the semaphore count is wrong", "drivers/i2c/i2c_foo.c", 30, "e"),
+        Claim("X2", "drivers/i2c/i2c_foo.c:12: the name is misspelled", "drivers/i2c/i2c_foo.c", 12, "e"),
+    ]
+
+    async def stages(hints: dict[str, str]) -> list[str]:
+        router = HintedRouter(verification_first_attempt_bad=False)
+        router.hints = hints
+        cheap = _llm(ScriptedOpenRouter([]), models=("cheap/model",))
+        strong = _llm(ScriptedOpenRouter([]), models=("strong/model",))
+        for llm in (cheap, strong):
+            llm._client = httpx.Client(transport=httpx.MockTransport(router.handler))
+        async with ToolBridge(build_server(intel)) as bridge:
+            run = await run_pipeline(
+                cheap,
+                strong,
+                bridge,
+                system_prompt(load_profile("zephyr"), "English"),
+                opening,
+                {f.path: f.new_side_lines for f in intel.files},
+                changed_files=[f.path for f in intel.files],
+                added_text="",
+                specialists=["intent"],
+                claims=claims,
+                max_hard_cases=2,  # one run for a case alone, one for the rest
+                log=lambda m: None,
+            )
+        assert run.review is not None and {c.id: c.verdict for c in run.review.external_claims} == {
+            "X1": "refuted",
+            "X2": "refuted",
+        }
+        return [s["stage"] for s in run.stages if s["stage"].startswith("H")]
+
+    # H1 is the pass's own concern (C1), H2 and H3 the two earlier comments. Hinted higher than they are, the
+    # concern does not take the one run for a case alone from an earlier comment unless it is high or critical.
+    assert await stages({"C1": "medium", "X1": "low", "X2": "low"}) == ["H2", "H3+H1"]
+    assert await stages({"C1": "high", "X1": "low", "X2": "low"}) == ["H1", "H2+H3"]
+    assert await stages({"C1": "low", "X1": "low", "X2": "medium"}) == ["H3", "H2+H1"]
+
+
 class SureOfItRouter(EnsembleRouter):
     """A router whose hard case on the Kconfig select confirms it as a plain high finding."""
 
