@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -56,11 +57,31 @@ class Previous:
     origin: str = ""
 
 
+def reviewed_nothing(record: dict[str, Any]) -> bool:
+    """Whether the run behind a record did not look at the change: it has stages that review it, and none
+    of them gave a result (an expired key, an outage). Verification and the hard cases do not count: they
+    check candidates and the comments of an earlier review, and run on those comments alone when every
+    pass over the change was lost. Nor does the report. A release before 0.6 still wrote a review into a
+    record of a run in which nothing gave a result, "No issues found", and the next run took the head for
+    reviewed. A record without stages says nothing either way and is taken as before."""
+    stages = [
+        s
+        for s in record.get("stages") or []
+        if isinstance(s, dict)
+        and s.get("stage") not in ("report", "verification")
+        and not re.fullmatch(r"H\d+(\+H\d+)*", str(s.get("stage") or ""))
+    ]
+    return bool(stages) and not any(s.get("submitted", True) for s in stages)
+
+
 def parse_record(record: dict[str, Any], review_map: dict[str, Any] | None, origin: str = "") -> Previous | None:
-    """A saved run as ``Previous``; None when it did not complete or predates the change digests."""
+    """A saved run as ``Previous``; None when it did not complete, reviewed nothing or predates the change
+    digests."""
     review = record.get("review")
     change = record.get("change")
     if not isinstance(review, dict) or not isinstance(change, dict) or not isinstance(change.get("files"), dict):
+        return None
+    if reviewed_nothing(record):
         return None
     head = str(record.get("head_sha") or "")
     refuted: list[Refutation] = []
