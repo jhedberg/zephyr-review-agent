@@ -551,6 +551,18 @@ def _parse_report(args: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str
     return args, []
 
 
+def hard_case_order(case: HardCase, concerns: dict[str, Concern]) -> tuple[int, int]:
+    """Where a hard case stands in the line for a run of its own: cases hinted critical or high first, then
+    those that settle a comment of an earlier review, then the rest; by severity within each.
+
+    A comment of an earlier review takes few steps to settle, and settled it is closed or kept for a reason.
+    In a shared run that is made to submit before it is done, it is left undecided whatever the run found: it
+    stays open on the pull request and comes back to be checked at every later push."""
+    severity = SEVERITIES.index(case.severity_hint)
+    settles = any(c is not None and c.stage == "external" for c in map(concerns.get, case.source_ids))
+    return (0 if severity <= SEVERITIES.index("high") else 1 if settles else 2), severity
+
+
 def _id_key(sid: str) -> tuple[str, int]:
     m = re.match(r"([A-Z]+)(\d+)", sid)
     return (m.group(1), int(m.group(2))) if m else (sid, 0)
@@ -1088,7 +1100,7 @@ async def run_pipeline(
                 fates[sid] = {"fate": "dismissed", "by": "verification", "reason": d.get("reason", "")}
 
         # 3. Hard cases, in parallel, highest severity first; the tail shares one run, or a few if so set.
-        cases = sorted(verification.hard_cases, key=lambda h: SEVERITIES.index(h.severity_hint))
+        cases = sorted(verification.hard_cases, key=lambda h: hard_case_order(h, by_c))
         batches = batch_hard_cases(cases, max_hard_cases, hard_case_batch)
         system = base_system + "\n\n" + _stage_prompt("hard_case") + "\n\n" + guides
         # Single cases share system prompt, tools and opening: one goes first and the rest read them cached.
