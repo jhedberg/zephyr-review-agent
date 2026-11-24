@@ -923,7 +923,11 @@ def cmd_review(args: argparse.Namespace) -> int:
                 since=rereview.since if rereview and rereview.narrowed else "",
             )
 
-        inline = inline_comments(review, cfg.comment_tag, cfg.suggestion_categories) if cfg.post_inline else []
+        inline = (
+            inline_comments(review, cfg.comment_tag, cfg.suggestion_categories, cfg.suggestion_max_columns)
+            if cfg.post_inline
+            else []
+        )
     else:
         failure_body = render_failure(run, pr, cfg.comment_tag)
         log("::error::" + "; ".join(run.errors))

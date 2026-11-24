@@ -362,20 +362,40 @@ def replaces_anchor(code: str, path: str = "") -> bool:
     return _lang(path) in _ELLIPSIS_IS_CODE or not _ELIDED_LINE.search(code)
 
 
-def applies_with_one_click(f: Finding, categories: Iterable[str] = ()) -> bool:
+TAB_COLUMNS = 8  # what a tab advances to in the width of a line: checkpatch's and GitHub's default
+
+
+def widest_line(code: str) -> int:
+    """The width in columns of the widest line of ``code``, a tab reaching the next multiple of eight."""
+    widest = 0
+    for line in code.split("\n"):
+        column = 0
+        for ch in line:
+            column = (column // TAB_COLUMNS + 1) * TAB_COLUMNS if ch == "\t" else column + 1
+        widest = max(widest, column)
+    return widest
+
+
+def applies_with_one_click(f: Finding, categories: Iterable[str] = (), max_columns: int = 0) -> bool:
     """Whether a finding's suggested code is posted as a suggestion block, which GitHub commits at a click.
     Nothing in a review checks the suggested code: a hard case settles whether the problem is real, not
     whether the fix is right for the code around it. So the block is for a fix that stands in for the lines
     it is anchored to, of a finding that was decided, and, where ``categories`` is given, of a kind whose fix
-    is mechanical. Other suggested code is shown as code to read."""
+    is mechanical. With ``max_columns``, it is also not for code with a line wider than that: committed as
+    it is, such a line fails the project's own style check. Other suggested code is shown as code to read."""
     if f.speculative or not replaces_anchor(f.suggested_code, f.file):
+        return False
+    if max_columns > 0 and widest_line(f.suggested_code.rstrip()) > max_columns:
         return False
     allowed = set(categories)
     return not allowed or f.category in allowed
 
 
 def inline_comments(
-    review: Review, tag: str = "zephyr-reviewer", suggestion_categories: Iterable[str] = ()
+    review: Review,
+    tag: str = "zephyr-reviewer",
+    suggestion_categories: Iterable[str] = (),
+    suggestion_max_columns: int = 0,
 ) -> list[dict[str, Any]]:
     """One review comment per anchored finding, self-contained and short, carrying a hidden marker for dedup."""
     comments = []
@@ -387,7 +407,8 @@ def inline_comments(
         if f.recommendation:
             body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
         if f.suggested_code.strip():
-            fence = "suggestion" if applies_with_one_click(f, suggestion_categories) else _lang(f.file)
+            one_click = applies_with_one_click(f, suggestion_categories, suggestion_max_columns)
+            fence = "suggestion" if one_click else _lang(f.file)
             body += ["", f"```{fence}", f.suggested_code.rstrip(), "```"]
         body += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
         c: dict[str, Any] = {"path": f.file, "line": f.end_line or f.line, "side": "RIGHT", "body": "\n".join(body)}

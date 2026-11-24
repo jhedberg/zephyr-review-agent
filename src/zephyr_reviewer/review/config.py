@@ -89,6 +89,7 @@ class ReviewConfig:
     post_inline: bool = True
     # Categories whose suggested code is posted as a suggestion block (applied at a click); empty: all of them.
     suggestion_categories: list[str] = field(default_factory=list)
+    suggestion_max_columns: int = 0  # no suggestion block for code with a wider line (tab = 8); 0: no limit
     comment_tag: str = "zephyr-reviewer"
     quiet: bool = False  # log the major steps only, not every model and tool call
     show_run_details: bool = False  # models, tokens, cost and time in the local log only
@@ -167,6 +168,7 @@ class ReviewConfig:
         cfg.post_comment = _bool(_env("post_comment"), True)
         cfg.post_inline = _bool(_env("post_inline_comments"), True)
         cfg.suggestion_categories = [c.lower() for c in _list(_env("suggestion_categories"))]
+        cfg.suggestion_max_columns = int(_env("suggestion_max_columns", str(cfg.suggestion_max_columns)))
         from .schema import CATEGORIES  # here, not at the top: schema is not needed to load a configuration
 
         unknown = [c for c in cfg.suggestion_categories if c not in CATEGORIES]
