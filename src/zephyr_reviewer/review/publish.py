@@ -128,7 +128,11 @@ def publish(
         # is in the log and the artifacts, and an earlier review's comment stays as it was.
         log("the review did not complete: nothing is posted")
         return outputs
-    inline = inline_comments(run.review, cfg.comment_tag, cfg.suggestion_categories) if cfg.post_inline else []
+    inline = (
+        inline_comments(run.review, cfg.comment_tag, cfg.suggestion_categories, cfg.suggestion_max_columns)
+        if cfg.post_inline
+        else []
+    )
     if claims:
         for line in outcome_lines(run.review, claims):  # what became of each earlier comment, whatever gets posted
             log(line)

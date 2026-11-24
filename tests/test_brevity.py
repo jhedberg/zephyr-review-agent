@@ -88,6 +88,30 @@ def test_suggested_code_is_applied_at_a_click_only_where_that_is_safe_to_offer()
     assert fence(mechanical, category="documentation") == "suggestion"
 
 
+def test_suggested_code_wider_than_the_project_allows_is_not_applied_at_a_click():
+    from zephyr_reviewer.review.render import widest_line
+
+    # A tab reaches the next multiple of eight, as checkpatch counts it.
+    assert widest_line("") == 0 and widest_line("abc") == 3 and widest_line("\tabc") == 11
+    assert widest_line("ab\tc") == 9 and widest_line("\t\t\t      x") == 31 and widest_line("a\n\tbcd\nef") == 11
+
+    def fence(code: str, limit: int) -> str:
+        review = Review("s", "comment", "high", [_f(suggested_code=code)])
+        body = inline_comments(review, "t", (), limit)[0]["body"]
+        assert code in body  # shown either way
+        return "suggestion" if "```suggestion\n" in body else "c"
+
+    # A cast added to a call and its continuation lines re-aligned: the second line passes the limit.
+    call = "\t\t\t(void)k_thread_create(&t, stack, K_THREAD_STACK_SIZEOF(stack),\n"
+    call += (
+        "\t\t\t\t\t      entry, &err, NULL, NULL, K_PRIO_COOP(CONFIG_FOO_RX_PRIO - 1),\n\t\t\t\t\t      0, K_NO_WAIT);"
+    )
+    assert widest_line(call) > 100
+    assert fence(call, 100) == "c" and fence(call, 0) == "suggestion" and fence(call, 120) == "suggestion"
+    exactly = "\t" + "x" * 92
+    assert widest_line(exactly) == 100 and fence(exactly, 100) == "suggestion" and fence(exactly + "y", 100) == "c"
+
+
 def test_code_with_an_elided_part_is_shown_not_offered_as_a_suggestion():
     def body(code: str, file: str = "a.c") -> str:
         return inline_comments(Review("s", "comment", "high", [_f(suggested_code=code, file=file)]), "t")[0]["body"]

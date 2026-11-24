@@ -162,6 +162,9 @@ def test_suggestion_categories_are_read_from_the_environment(monkeypatch):
     assert ReviewConfig.from_env().suggestion_categories == []
     monkeypatch.setenv("INPUT_SUGGESTION_CATEGORIES", "coding_guidelines, Documentation")
     assert ReviewConfig.from_env().suggestion_categories == ["coding_guidelines", "documentation"]
+    assert ReviewConfig.from_env().suggestion_max_columns == 0
+    monkeypatch.setenv("INPUT_SUGGESTION_MAX_COLUMNS", "100")
+    assert ReviewConfig.from_env().suggestion_max_columns == 100
     monkeypatch.setenv("INPUT_SUGGESTION_CATEGORIES", "coding_guidelines,style")
     with pytest.raises(ValueError, match="suggestion_categories: unknown style"):
         ReviewConfig.from_env()
