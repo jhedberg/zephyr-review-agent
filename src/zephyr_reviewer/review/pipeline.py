@@ -1238,6 +1238,7 @@ async def run_pipeline(
         review.verdict = "request_changes"
     elif not review.findings and review.verdict == "request_changes":
         review.verdict = "approve"
+    review.agree_with_findings()
     # Nor is the confidence the report's alone to state. It is told which passes were planned, not which
     # of them returned nothing, and it has put "high" over a finding marked speculative.
     if review.confidence == "high" and (lost or any(f.speculative for f in review.findings)):
