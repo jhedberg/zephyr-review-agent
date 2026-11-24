@@ -99,6 +99,38 @@ def _record(**over) -> dict:
     return rec
 
 
+def test_a_record_of_a_run_that_looked_at_nothing_is_not_an_earlier_review():
+    # What a run wrote when every model request failed, before such a run stopped posting a review: no stage
+    # submitted, no tokens used, and still a review that says "No issues found".
+    passes = [{"stage": name, "submitted": False, "steps": 1} for name in ("intent", "logic", "report")]
+    empty = _record(stages=passes, usage={"requests": 0, "total_tokens": 0})
+    empty["review"] = {**empty["review"], "summary": "No issues found.", "findings": []}
+    assert parse_record(empty, {}) is None
+    # The report stage alone writes a summary of nothing: it is not a pass that looked at the change.
+    only_report = _record(stages=[*passes[:2], {"stage": "report", "submitted": True}])
+    assert parse_record(only_report, {}) is None
+    # One pass that gave a result makes it a review, with the passes it lost.
+    partly = _record(stages=[{"stage": "intent", "submitted": True}, *passes[1:]])
+    assert parse_record(partly, {}) is not None
+    # Verification and hard cases check candidates, not the change: with earlier comments to settle they
+    # run although every pass was lost, alone or sharing a run.
+    checked = [*passes, {"stage": "verification", "submitted": True}, {"stage": "H1", "submitted": True}]
+    assert parse_record(_record(stages=checked), {}) is None
+    assert parse_record(_record(stages=[*passes, {"stage": "H2+H3", "submitted": True}]), {}) is None
+    # A two-stage run reviews the change in its draft and in its verifying stage.
+    two = [{"stage": "draft", "submitted": False}, {"stage": "verify", "submitted": True}]
+    assert parse_record(_record(stages=two), {}) is not None
+    assert (
+        parse_record(
+            _record(stages=[{"stage": "draft", "submitted": False}, {"stage": "verify", "submitted": False}]), {}
+        )
+        is None
+    )
+    # A record that does not list its stages, or does not say whether they submitted, is taken as before.
+    assert parse_record(_record(), {}) is not None and parse_record(_record(stages=[]), {}) is not None
+    assert parse_record(_record(stages=[{"stage": "draft"}, {"stage": "verify"}]), {}) is not None
+
+
 def _map() -> dict:
     return {
         "concerns": [
