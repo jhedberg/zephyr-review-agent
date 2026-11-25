@@ -112,6 +112,28 @@ def test_suggested_code_wider_than_the_project_allows_is_not_applied_at_a_click(
     assert widest_line(exactly) == 100 and fence(exactly, 100) == "suggestion" and fence(exactly + "y", 100) == "c"
 
 
+def test_suggested_code_far_shorter_than_its_range_is_not_applied_at_a_click():
+    from zephyr_reviewer.review.render import collapses_its_range
+
+    one = "\tacl->len = sys_cpu_to_le16((uint16_t)(buf->len - HDR));"
+
+    def fence(first: int, last: int, code: str = one) -> str:
+        finding = _f(line=first, end_line=last, suggested_code=code)
+        body = inline_comments(Review("s", "comment", "high", [finding]), "t")[0]["body"]
+        assert code in body  # shown either way
+        return "suggestion" if "```suggestion\n" in body else "c"
+
+    # Three places in three functions, anchored from the first to the last, and the fix for the first:
+    # in the place of all 28 lines it would take two and a half functions with it.
+    assert fence(338, 365) == "c" and collapses_its_range(_f(line=338, end_line=365, suggested_code=one))
+    # The same line for the line it fixes, or for a few lines, is a replacement.
+    assert fence(338, 338) == "suggestion" and fence(338, 0) == "suggestion" and fence(338, 341) == "suggestion"
+    # From five lines on the code is held against the range: a third of it or less is not a replacement.
+    assert fence(338, 342) == "c" and fence(338, 342, one + "\n" + one) == "suggestion"
+    six = "\n".join([one] * 6)
+    assert fence(338, 355, six) == "c" and fence(338, 354, six) == "suggestion"
+
+
 def test_code_with_an_elided_part_is_shown_not_offered_as_a_suggestion():
     def body(code: str, file: str = "a.c") -> str:
         return inline_comments(Review("s", "comment", "high", [_f(suggested_code=code, file=file)]), "t")[0]["body"]

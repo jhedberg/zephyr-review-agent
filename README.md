@@ -161,7 +161,8 @@ nothing from the tree is executed. That is what makes it safe to run on a fork's
    the same location, so threads stay single. If GitHub rejects the inline review, the findings
    are folded back into the top-level comment. `post_inline_comments: "false"` puts everything in
    the top-level comment. Suggested code is a suggestion block, committed at a click, when it can
-   stand in for the lines it is anchored to and the finding is not speculative;
+   stand in for the lines it is anchored to (it has no elided part and is not far shorter than
+   them) and the finding is not speculative;
    `suggestion_categories` limits that to the categories it lists, and `suggestion_max_columns`
    to code without a line wider than the project allows; other suggested code is shown as a plain
    code block. `review-output/` receives `comment.md`, `inline_comments.json`,

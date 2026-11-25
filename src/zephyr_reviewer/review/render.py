@@ -375,6 +375,18 @@ def widest_line(code: str) -> int:
     return widest
 
 
+WIDE_RANGE = 5  # lines a comment is anchored to from which its suggested code is held against their number
+
+
+def collapses_its_range(f: Finding) -> bool:
+    """Whether the suggested code is far shorter than the lines it would replace: a third of them or less,
+    on a range of five lines or more. GitHub puts a suggestion block in the place of the whole range the
+    comment is anchored to. A finding about several places is anchored from the first to the last of them,
+    and its suggested code is usually the fix for one: committed, it takes everything in between with it."""
+    lines = f.end_line - f.line + 1 if f.end_line > f.line else 1
+    return lines >= WIDE_RANGE and len(f.suggested_code.rstrip().split("\n")) * 3 <= lines
+
+
 def applies_with_one_click(f: Finding, categories: Iterable[str] = (), max_columns: int = 0) -> bool:
     """Whether a finding's suggested code is posted as a suggestion block, which GitHub commits at a click.
     Nothing in a review checks the suggested code: a hard case settles whether the problem is real, not
@@ -382,7 +394,7 @@ def applies_with_one_click(f: Finding, categories: Iterable[str] = (), max_colum
     it is anchored to, of a finding that was decided, and, where ``categories`` is given, of a kind whose fix
     is mechanical. With ``max_columns``, it is also not for code with a line wider than that: committed as
     it is, such a line fails the project's own style check. Other suggested code is shown as code to read."""
-    if f.speculative or not replaces_anchor(f.suggested_code, f.file):
+    if f.speculative or not replaces_anchor(f.suggested_code, f.file) or collapses_its_range(f):
         return False
     if max_columns > 0 and widest_line(f.suggested_code.rstrip()) > max_columns:
         return False
