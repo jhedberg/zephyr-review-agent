@@ -151,13 +151,19 @@ nothing from the tree is executed. That is what makes it safe to run on a fork's
    than restarting it.
 5. The model ends by calling `submit_review`, a client-side tool whose arguments are the review.
    Findings are validated: a `line` must be on the new side of the diff to become an inline
-   comment, otherwise it is demoted to the summary with a note; a file outside the diff is demoted
-   too; a malformed submission is rejected with reasons and the model retries.
+   comment, otherwise the finding goes on its file as a whole; a file outside the diff is demoted
+   to the summary with a note; a malformed submission is rejected with reasons and the model
+   retries.
 6. Findings anchored to a changed line are posted as inline review comments at that line, each
    self-contained with problem, trigger, impact, recommendation and a committable suggestion. The
    top-level comment (one per PR, updated in place through a hidden marker) carries the verdict,
    summary, test gaps, commit-message and discussion issues, the test plan, and any finding that
-   could not be anchored. A re-run skips inline comments it already posted for the same finding at
+   could not be anchored. A finding without such a line, in a file the pull request changes, is
+   posted as a comment on that file: it has a thread like an inline comment, so it can be
+   resolved or given a thumbs down, and a later run answers it there. Only a finding about no
+   file, or about a file outside the diff, stays in the top-level comment, and so does one whose
+   comment on the file GitHub rejects.
+   A re-run skips inline comments it already posted for the same finding at
    the same location, so threads stay single. If GitHub rejects the inline review, the findings
    are folded back into the top-level comment. `post_inline_comments: "false"` puts everything in
    the top-level comment. Suggested code is a suggestion block, committed at a click, when it can

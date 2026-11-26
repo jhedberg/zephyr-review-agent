@@ -56,15 +56,17 @@ def test_top_level_comment_excludes_inline_findings_but_keeps_unanchored_ones():
     assert "Early return leaks the bus lock" in full and "Early return leaks the bus lock" not in split
     assert "select of I2C_BUS_RECOVERY" not in split
     assert "2 finding(s) are posted as inline comments on the changed lines (1 high, 1 medium)." in split
-    assert "### Findings not anchored to a changed line" in split
-    assert "Unrelated file cited" in split and "Context line cited" in split  # line 0 / off-diff stay here
+    assert "1 finding(s) are posted as comments on their file (1 low)." in split
+    assert "### Findings not tied to a changed file" in split
+    # A file the pull request does not change cannot carry a comment; a changed file can, without a line.
+    assert "Unrelated file cited" in split and "Context line cited" not in split
     assert "**Findings:** 4" in split and "### Test gaps" in split
 
 
 def test_inline_comments_are_self_contained_and_marked():
     review = _review()
     comments = inline_comments(review, "zephyr-reviewer")
-    assert [c["path"] for c in comments] == ["drivers/i2c/i2c_foo.c", "drivers/i2c/Kconfig"]
+    assert [c["path"] for c in comments] == ["drivers/i2c/i2c_foo.c", "drivers/i2c/Kconfig", "drivers/i2c/i2c_foo.c"]
     lock = comments[0]
     key = finding_key(review.findings[0])
     assert lock["body"].startswith(inline_marker("zephyr-reviewer", key))
@@ -112,7 +114,7 @@ def test_publish_posts_summary_then_inline_review_and_skips_already_posted():
     assert posted_summary["body"] == "summary-without-inline"
     review_req = [b for m, p, b in seen if p.endswith("/reviews")][0]
     assert [c["path"] for c in review_req["comments"]] == ["drivers/i2c/Kconfig"]  # the lock finding was skipped
-    assert out["inline_count"] == 1 and out["posted"] == "true"
+    assert out["inline_count"] == 2 and out["posted"] == "true"  # one on a line, one on a file
     assert any("1 inline comment(s) already posted" in m for m in logs)
 
 
@@ -150,8 +152,8 @@ def test_saved_inline_comments_are_posted_after_editing(tmp_path):
     inline = inline_comments(run.review, cfg.comment_tag)
     pub.save_artifacts(cfg.output_dir, run, "top", pr, cfg, inline)
     saved = json.loads((tmp_path / "out" / "inline_comments.json").read_text())
-    assert len(saved) == 2
-    (tmp_path / "out" / "inline_comments.json").write_text(json.dumps(saved[:1]))  # a human drops one
+    assert len(saved) == 3
+    (tmp_path / "out" / "inline_comments.json").write_text(json.dumps(saved[:1]))  # a human drops the others
     seen: list = []
     out = pub.post_saved(cfg.output_dir, _gh(seen), inline=True, tag=cfg.comment_tag, log=lambda m: None)
     assert out["inline_count"] == 1
@@ -170,7 +172,7 @@ def test_already_posted_is_recognised_by_title_when_the_old_marker_differs():
     existing = [{"id": 1, "path": "drivers/i2c/i2c_foo.c", "line": 1668, "body": old_body}]
     out = pub.publish(ReviewConfig(), _gh(seen, existing), pr, run, lambda e: "s", log=lambda m: None)
     review_req = [b for m, p, b in seen if p.endswith("/reviews")][0]
-    assert [c["path"] for c in review_req["comments"]] == ["drivers/i2c/Kconfig"] and out["inline_count"] == 1
+    assert [c["path"] for c in review_req["comments"]] == ["drivers/i2c/Kconfig"] and out["inline_count"] == 2
     # A different file with the same title is a different finding.
     existing = [{"id": 1, "path": "drivers/other.c", "line": 5, "body": old_body}]
     seen.clear()

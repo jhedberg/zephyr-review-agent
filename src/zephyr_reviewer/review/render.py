@@ -202,10 +202,12 @@ def render_comment(
     run_id: str = "",
     since: str = "",
 ) -> str:
-    """The top-level comment. With ``exclude_inline`` the anchored findings are left to inline comments
-    and only counted here; unanchored findings always appear in full."""
+    """The top-level comment. With ``exclude_inline`` the findings that get a comment of their own, on a
+    changed line or on the file, are left to those comments and only counted here; the others always
+    appear in full."""
     inline = [f for f in review.findings if f.inline] if exclude_inline else []
-    listed = [f for f in review.findings if f not in inline]
+    on_file = [f for f in review.findings if f.on_file] if exclude_inline else []
+    listed = [f for f in review.findings if f not in inline and f not in on_file]
     out = [
         marker(tag),
         head_marker(tag, pr.head_sha),
@@ -225,11 +227,12 @@ def render_comment(
     lost = lost_passes_line(run)
     if lost:
         out += [lost, ""]
-    if inline:
-        counts = ", ".join(
-            f"{n} {sev}" for sev, n in ((s, sum(1 for f in inline if f.severity == s)) for s in SEVERITIES) if n
-        )
-        out += [f"{len(inline)} finding(s) are posted as inline comments on the changed lines ({counts}).", ""]
+    for group, where in ((inline, "inline comments on the changed lines"), (on_file, "comments on their file")):
+        if group:
+            counts = ", ".join(
+                f"{n} {sev}" for sev, n in ((s, sum(1 for f in group if f.severity == s)) for s in SEVERITIES) if n
+            )
+            out += [f"{len(group)} finding(s) are posted as {where} ({counts}).", ""]
     carried = [c for c in review.external_claims if c.source.startswith(EARLIER_SUMMARY)]
     earlier = [c for c in review.external_claims if from_earlier_review(c.source) and c not in carried]
     if earlier:
@@ -240,8 +243,8 @@ def render_comment(
     for f in listed:
         by_sev.setdefault(f.severity, []).append(f)
     idx = 0
-    if inline and listed:
-        out += ["### Findings not anchored to a changed line", ""]
+    if (inline or on_file) and listed:
+        out += ["### Findings not tied to a changed file", ""]
     for sev in SEVERITIES:
         items = by_sev.get(sev) or []
         if not items:
@@ -412,6 +415,9 @@ def inline_comments(
     """One review comment per anchored finding, self-contained and short, carrying a hidden marker for dedup."""
     comments = []
     for f in review.findings:
+        if f.on_file:
+            comments.append(file_comment(f, tag))
+            continue
         if not f.inline:
             continue
         badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
@@ -429,6 +435,25 @@ def inline_comments(
             c["start_side"] = "RIGHT"
         comments.append(c)
     return comments
+
+
+def file_comment(f: Finding, tag: str = "zephyr-reviewer") -> dict[str, Any]:
+    """The review comment for a finding that has no line it can be anchored to, in a file the pull request
+    changes: on the file as a whole (``subject_type`` "file"), in the form of an inline comment. It has a
+    thread like one, which is where a person sets a finding aside and where a later run answers it; a
+    finding that is only in the summary comment has neither. Suggested code is shown as code to read: there
+    are no lines for a suggestion block to replace."""
+    badge = f"{SEVERITY_BADGE.get(f.severity, f.severity)}{' (speculative)' if f.speculative else ''}"
+    text = finding_text(f)
+    if f.line:
+        text += f" This is about line {f.line}, which the pull request does not change."
+    body = [inline_marker(tag, finding_key(f)), f"**{posted(f.title)}** · {badge}", "", text]
+    if f.recommendation:
+        body += ["", f"**Fix:** {_sentence(f.recommendation)}"]
+    if f.suggested_code.strip():
+        body += ["", f"```{_lang(f.file)}", f.suggested_code.rstrip(), "```"]
+    body += ["", f"<sub>{ADVISORY_SHORT}</sub>"]
+    return {"path": f.file, "subject_type": "file", "body": "\n".join(body)}
 
 
 PRIORITY_BADGE = {"must": "🔴 must", "should": "🟡 should", "optional": "⚪ optional"}
@@ -460,9 +485,12 @@ def preview_inline(inline: list[dict[str, Any]]) -> str:
         return ""
     out = [f"### {len(inline)} inline comment(s)"]
     for i, c in enumerate(inline, 1):
-        where = f"{c['path']}:{c.get('start_line') or c['line']}" + (
-            f"-{c['line']}" if c.get("start_line") and c.get("start_line") != c["line"] else ""
-        )
+        if c.get("subject_type") == "file":
+            where = f"{c['path']} (the file as a whole)"
+        else:
+            where = f"{c['path']}:{c.get('start_line') or c['line']}" + (
+                f"-{c['line']}" if c.get("start_line") and c.get("start_line") != c["line"] else ""
+            )
         body = "\n".join(ln for ln in c["body"].splitlines() if not ln.startswith("<!-- "))
         out += ["", f"--- [{i}] {where} ---", body]
     return "\n".join(out)
@@ -513,7 +541,7 @@ def earlier_summary_line(carried: list[ClaimVerdict]) -> str:
     tally = {v: sum(1 for c in carried if c.verdict == v) for v in ("refuted", "confirmed", "undecided")}
     parts = []
     if tally["confirmed"]:
-        parts.append(f"{tally['confirmed']} still apply and are listed below")
+        parts.append(f"{tally['confirmed']} still apply and are among the findings of this review")
     if tally["refuted"]:
         parts.append(f"{tally['refuted']} {'does' if tally['refuted'] == 1 else 'do'} not apply")
     if tally["undecided"]:

@@ -88,7 +88,7 @@ def test_ask_posts_only_when_confirmed_and_uses_the_edited_body():
 
     cfg = ReviewConfig(publish="ask", post_inline=True)
     out = pub.publish(cfg, _gh(seen), pr, run, lambda e: "original", log=lambda m: None, confirm=decline)
-    assert out["posted"] == "false" and seen == [] and asked == [("original", 2)]
+    assert out["posted"] == "false" and seen == [] and asked == [("original", 3)]
 
     def accept_edited(body, inline):
         return True, body + "\nedited by a human", inline[:1]  # a human drops the second inline comment
