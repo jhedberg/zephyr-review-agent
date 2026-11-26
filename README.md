@@ -1,6 +1,7 @@
 # zephyr-reviewer
 
 Source intelligence for the Zephyr tree, exposed over [MCP](https://modelcontextprotocol.io), and
+<!-- throwaway line for a test of review comments; never merged -->
 an independent review agent that drives it through [OpenRouter](https://openrouter.ai).
 
 A diff-only reviewer guesses. This one looks things up. The model reviewing a pull request can read
