@@ -187,28 +187,56 @@ def _post(
     log,
     render: RenderFn | None = None,
 ) -> dict[str, Any]:
-    """Top-level comment first (upserted), then the inline review. If GitHub rejects the inline review
-    the anchored findings are folded back into the top-level comment so nothing is lost."""
+    """Top-level comment first (upserted), then the inline review, then the comments on a file as a whole,
+    one request each: a review cannot carry those. If GitHub rejects the inline review the findings are
+    folded back into the top-level comment, and so is a comment on a file that it rejects, so nothing is
+    lost."""
     out: dict[str, Any] = {"comment_url": "", "review_url": "", "inline_count": 0, "posted": "false"}
     if post_comment:
         out["comment_url"] = gh.upsert_comment(number, body, marker(tag))
         out["posted"] = "true"
         log(f"comment: {out['comment_url']}")
-    if inline:
-        fresh = _without_already_posted(gh, number, inline, tag, log)
-        if fresh:
-            try:
-                out["review_url"] = gh.create_review(
-                    number, head_sha, fresh, body=f"{len(fresh)} inline note(s) from the AI review."
-                )
-                out["inline_count"] = len(fresh)
-                out["posted"] = "true"
-                log(f"inline review: {out['review_url']} ({len(fresh)} comment(s))")
-            except GitHubError as exc:
-                log(f"::warning::inline review rejected ({exc}); folding the findings into the summary comment")
-                if post_comment and render is not None:
-                    out["comment_url"] = gh.upsert_comment(number, render(False), marker(tag))
+    if not inline:
+        return out
+    fresh = _without_already_posted(gh, number, inline, tag, log)
+    on_lines = [c for c in fresh if c.get("subject_type") != "file"]
+    on_files = [c for c in fresh if c.get("subject_type") == "file"]
+    if on_lines:
+        try:
+            out["review_url"] = gh.create_review(
+                number, head_sha, on_lines, body=f"{len(on_lines)} inline note(s) from the AI review."
+            )
+            out["inline_count"] = len(on_lines)
+            out["posted"] = "true"
+            log(f"inline review: {out['review_url']} ({len(on_lines)} comment(s))")
+        except GitHubError as exc:
+            log(f"::warning::inline review rejected ({exc}); folding the findings into the summary comment")
+            if post_comment and render is not None:
+                out["comment_url"] = gh.upsert_comment(number, render(False), marker(tag))
+                return out  # that comment lists every finding in full: none needs a comment of its own now
+    rejected = []
+    for c in on_files:
+        try:
+            gh.create_file_comment(number, head_sha, c["path"], c["body"])
+        except GitHubError as exc:
+            log(f"::warning::comment on {c['path']} rejected ({exc}); folding the finding into the summary comment")
+            rejected.append(c)
+    if len(on_files) > len(rejected):
+        out["inline_count"] += len(on_files) - len(rejected)
+        out["posted"] = "true"
+        log(f"{len(on_files) - len(rejected)} comment(s) on a file as a whole")
+    if rejected and post_comment:
+        out["comment_url"] = gh.upsert_comment(number, body + _folded(rejected), marker(tag))
     return out
+
+
+def _folded(comments: list[dict[str, Any]]) -> str:
+    """Comments that could not be posted on their file, as a section for the end of the summary comment."""
+    out = ["", "", "### Findings that could not be posted on their file"]
+    for c in comments:
+        text = "\n".join(ln for ln in c["body"].splitlines() if not ln.startswith("<!-- ")).strip()
+        out += ["", f"`{c['path']}`", "", text]
+    return "\n".join(out)
 
 
 def _without_already_posted(

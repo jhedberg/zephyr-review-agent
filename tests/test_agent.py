@@ -202,7 +202,7 @@ async def test_agent_investigates_then_submits(mini_repo):
     assert "### Test gaps" in body and "2 tool call(s)" in body and "$0.025" in body
 
     inline = inline_comments(review)
-    assert len(inline) == 2
+    assert len(inline) == 3 and inline[2]["subject_type"] == "file"
     assert inline[0] == {
         "path": "drivers/i2c/i2c_foo.c",
         "line": 19,

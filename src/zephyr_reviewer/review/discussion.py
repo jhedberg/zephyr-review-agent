@@ -107,7 +107,8 @@ class Discussion:
         for raw in gh.review_comments(number):
             c = _comment("inline", raw)
             c.path = raw.get("path")
-            c.line = raw.get("line") or raw.get("original_line")
+            # GitHub reports line 1 for a comment on a file as a whole, which says nothing about where it is.
+            c.line = None if raw.get("subject_type") == "file" else raw.get("line") or raw.get("original_line")
             c.outdated = raw.get("position") is None
             c.in_reply_to = raw.get("in_reply_to_id")
             d.inline.append(c)

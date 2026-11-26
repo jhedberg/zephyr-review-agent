@@ -224,6 +224,7 @@ class Finding:
     end_line: int = 0
     speculative: bool = False
     inline: bool = False  # anchored to a line GitHub will accept an inline comment on
+    on_file: bool = False  # no such line, in a file the pull request changes: a comment on the file can carry it
     notes: list[str] = field(default_factory=list)
 
 
@@ -410,7 +411,8 @@ def parse_review(args: dict[str, Any], changed_lines: dict[str, set[int]]) -> tu
                 if f.end_line and any(n not in lines for n in range(f.line, f.end_line + 1)):
                     f.end_line = 0  # range leaves the diff; anchor on the single line instead
             else:
-                f.notes.append(f"line {f.line} is not on the new side of the diff; shown in the summary only")
+                f.notes.append(f"line {f.line} is not on the new side of the diff; not anchored to it")
+        f.on_file = bool(path) and path in changed_lines and not f.inline
         findings.append(f)
 
     plan: list[TestPlanEntry] = []

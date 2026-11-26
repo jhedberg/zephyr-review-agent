@@ -206,6 +206,8 @@ def _scan(gh: GitHub, number: int, tag: str) -> _Scan:
 
 
 def _line_of(raw: dict[str, Any], thread: dict[str, Any]) -> int:
+    if raw.get("subject_type") == "file":
+        return 0  # GitHub reports line 1 for a comment on a file as a whole: it is not the finding's line
     return int(raw.get("line") or raw.get("original_line") or thread.get("line") or 0)
 
 

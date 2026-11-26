@@ -253,6 +253,13 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         resp = self._request("POST", f"/repos/{self.repo}/pulls/{number}/reviews", json_body=payload)
         return resp.json().get("html_url", "")
 
+    def create_file_comment(self, number: int, commit_sha: str, path: str, body: str) -> str:
+        """A review comment on a file as a whole, which opens a thread like one on a line. It is posted on
+        its own: the comments of a review take a line or a position, not ``subject_type``."""
+        payload = {"commit_id": commit_sha, "path": path, "subject_type": "file", "body": body}
+        resp = self._request("POST", f"/repos/{self.repo}/pulls/{number}/comments", json_body=payload)
+        return resp.json().get("html_url", "")
+
     def reply_to_review_comment(self, number: int, comment_id: int, body: str) -> str:
         resp = self._request(
             "POST", f"/repos/{self.repo}/pulls/{number}/comments/{comment_id}/replies", json_body={"body": body}
